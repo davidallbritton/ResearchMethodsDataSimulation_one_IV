@@ -1,0 +1,12 @@
+name: ResearchMethodsDataSimulation_one_IV
+title: ResearchMethodsDataSimulation_one_IV
+username: dallbrit
+account: dallbrit
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 17630175
+bundleId: 12300328
+url: https://dallbrit.shinyapps.io/ResearchMethodsDataSimulation_one_IV/
+version: 1
+asMultiple: FALSE
+asStatic: FALSE
