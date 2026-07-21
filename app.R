@@ -491,7 +491,9 @@ ttestUI <- function(id) {
                         class = "plot-col",
                         tags$h4("Independent Groups Comparison"),
                         plotOutput(ns("dotplot"), height = "500px"),
-                        uiOutput(ns("ttest_result"))
+                        uiOutput(ns("ttest_result")),
+                        uiOutput(ns("anova_result")),
+                        uiOutput(ns("dummy_result"))
                     )
                 )
             )
@@ -646,6 +648,47 @@ ttestServer <- function(id) {
                     "The difference is %sstatistically significant at α = .05.",
                     if (sig) "" else "not "
                 ))
+            )
+        })
+
+        # Just for fun: the same comparison as a one-way ANOVA. With two groups
+        # F = t^2 and the p-value is identical to the t-test above.
+        output$anova_result <- renderUI({
+            d <- sim_data()
+            s  <- summary(aov(Score ~ Group, data = d))[[1]]
+            Fv <- s[["F value"]][1]; Fp <- s[["Pr(>F)"]][1]
+            ss <- s[["Sum Sq"]]; eta2 <- ss[1] / sum(ss)
+
+            div(class = "result-box",
+                div(class = "result-title", "One-way ANOVA"),
+                div(class = "apa", HTML(sprintf(
+                    "<i>F</i>(%d, %d) = %s, <i>p</i> %s",
+                    round(s[["Df"]][1]), round(s[["Df"]][2]),
+                    fmt(Fv), fmt_p(Fp)
+                ))),
+                div(HTML(sprintf("&eta;&sup2; = %s", fmt_r(eta2)))),
+                div(class = "decision",
+                    "Same p as the t-test — with two groups, F = t².")
+            )
+        })
+
+        # And again as a correlation: code the groups 0/1 and correlate with the
+        # score. This point-biserial r has the same p; the t-test is a
+        # correlation with a two-value predictor.
+        output$dummy_result <- renderUI({
+            d <- sim_data()
+            x  <- as.integer(d$Group) - 1L      # Group 1 = 0, Group 2 = 1
+            ct <- cor.test(x, d$Score)
+
+            div(class = "result-box",
+                div(class = "result-title",
+                    "Point-biserial correlation (groups coded 0/1)"),
+                div(class = "apa", HTML(sprintf(
+                    "<i>r</i>(%d) = %s, <i>p</i> %s",
+                    round(ct$parameter), fmt_r(ct$estimate), fmt_p(ct$p.value)
+                ))),
+                div(class = "decision",
+                    "Same p once more — and r² equals the ANOVA's η².")
             )
         })
 
