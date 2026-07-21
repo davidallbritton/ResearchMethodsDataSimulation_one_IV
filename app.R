@@ -165,7 +165,8 @@ corrUI <- function(id) {
                         class = "plot-col",
                         tags$h4("Scatterplot"),
                         plotOutput(ns("scatter"), height = "500px"),
-                        uiOutput(ns("cor_result"))
+                        uiOutput(ns("cor_result")),
+                        uiOutput(ns("reg_result"))
                     )
                 )
             )
@@ -375,6 +376,36 @@ corrServer <- function(id) {
                     "The correlation is %sstatistically significant at α = .05.",
                     if (sig) "" else "not "
                 ))
+            )
+        })
+
+        output$reg_result <- renderUI({
+            d <- sim_data()
+            fit <- lm(Y ~ X, data = d)
+            sm  <- summary(fit)
+            b0  <- coef(fit)[1]; b1 <- coef(fit)[2]
+            se_b1 <- sm$coefficients[2, 2]
+            t_b1  <- sm$coefficients[2, 3]
+            p_b1  <- sm$coefficients[2, 4]
+            r2    <- sm$r.squared
+            Fs    <- sm$fstatistic            # value, numdf, dendf
+            Fp    <- pf(Fs[1], Fs[2], Fs[3], lower.tail = FALSE)
+
+            # Prediction equation, with the slope's sign read aloud.
+            eq <- sprintf("&#374; = %s %s %sX",
+                          fmt(b0), if (b1 < 0) "&minus;" else "+", fmt(abs(b1)))
+
+            div(class = "result-box",
+                div(class = "result-title", "Linear regression"),
+                div(class = "apa", HTML(eq)),
+                div(HTML(sprintf(
+                    "<i>R</i>&sup2; = %s, <i>F</i>(%d, %d) = %s, <i>p</i> %s",
+                    fmt_r(r2), round(Fs[2]), round(Fs[3]), fmt(Fs[1]), fmt_p(Fp)
+                ))),
+                div(HTML(sprintf(
+                    "Slope: <i>b</i> = %s, <i>SE</i> = %s, <i>t</i>(%d) = %s, <i>p</i> %s",
+                    fmt(b1), fmt(se_b1), round(sm$df[2]), fmt(t_b1), fmt_p(p_b1)
+                )))
             )
         })
     })
