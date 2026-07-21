@@ -45,9 +45,16 @@ ui <- fluidPage(
         .stats-col h4 { margin-top: 14px; }
         .data-head { display: flex; align-items: baseline; gap: 10px; }
         .data-head h4 { margin-bottom: 6px; }
+        /* t-test results readout below the plot. */
+        .ttest-box { border: 1px solid #d4d4d4; border-radius: 6px;
+                     background: #fafafa; padding: 8px 12px; margin-top: 10px;
+                     max-width: 460px; }
+        .ttest-box .ttest-title { font-weight: bold; }
+        .ttest-box .apa { font-size: 108%; }
+        .ttest-box .decision { color: #5a6570; }
     "))),
 
-    titlePanel("Simulate Data: Two-Group t-test"),
+    titlePanel("Simulate Data: Independent-samples t-test"),
 
     sidebarLayout(
 
@@ -115,8 +122,9 @@ ui <- fluidPage(
                 ),
                 div(
                     class = "plot-col",
-                    tags$h4("Group Comparison"),
-                    plotOutput("dotplot", height = "500px")
+                    tags$h4("Independent Groups Comparison"),
+                    plotOutput("dotplot", height = "500px"),
+                    uiOutput("ttest_result")
                 )
             )
         )
@@ -127,6 +135,11 @@ server <- function(input, output, session) {
 
     fmt <- function(x) sprintf("%.2f", x)
     fmt_code <- function(x) as.character(x)
+
+    # APA p-value: no leading zero, and "< .001" for very small values.
+    fmt_p <- function(p) {
+        if (p < .001) "< .001" else sub("0\\.", ".", sprintf("= %.3f", p))
+    }
 
     # Everything implied by a set of parameter values.
     derive <- function(mean1, sd1, mean2, sd2) {
@@ -199,7 +212,8 @@ server <- function(input, output, session) {
             "group2 <- rnorm(n, mean = ", fmt_code(p$mean2),
                 ", sd = ", fmt_code(p$sd2), ")\n",
             "\n",
-            "t.test(group1, group2)\n",
+            "# var.equal = TRUE gives Student's t (R defaults to Welch)\n",
+            "t.test(group2, group1, var.equal = TRUE)\n",
             "boxplot(group1, group2)"
         )
     })
@@ -246,6 +260,33 @@ server <- function(input, output, session) {
             check.names = FALSE
         )
     }, striped = TRUE, colnames = TRUE, rownames = FALSE, align = "lrr")
+
+    output$ttest_result <- renderUI({
+        d <- sim_data()
+        s1 <- d$Score[d$Group == G1]; s2 <- d$Score[d$Group == G2]
+        # Student's t (pooled variance), to match the pooled-SD Cohen's d.
+        tt <- t.test(s2, s1, var.equal = TRUE)
+        samp_d <- (mean(s2) - mean(s1)) / sqrt((var(s1) + var(s2)) / 2)
+        sig <- tt$p.value < .05
+
+        div(class = "ttest-box",
+            div(class = "ttest-title", "Independent-samples t-test"),
+            div(class = "apa", HTML(sprintf(
+                "<i>t</i>(%d) = %s, <i>p</i> %s, <i>d</i> = %s",
+                round(tt$parameter), fmt(tt$statistic), fmt_p(tt$p.value),
+                fmt(samp_d)
+            ))),
+            div(HTML(sprintf(
+                "Mean difference = %s, 95%% CI [%s, %s]",
+                fmt(mean(s2) - mean(s1)),
+                fmt(tt$conf.int[1]), fmt(tt$conf.int[2])
+            ))),
+            div(class = "decision", sprintf(
+                "The difference is %sstatistically significant at α = .05.",
+                if (sig) "" else "not "
+            ))
+        )
+    })
 
     # Y-axis range from the MODEL, so the frame and the population-mean lines
     # stay put when students regenerate with the same parameters.
