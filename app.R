@@ -39,6 +39,9 @@ fmt_p <- function(p) {
     if (p < .001) "< .001" else sub("0\\.", ".", sprintf("= %.3f", p))
 }
 
+# APA correlation: 2 decimals, no leading zero, sign preserved (e.g. -.45).
+fmt_r <- function(x) sub("(-?)0\\.", "\\1.", sprintf("%.2f", x))
+
 # ---- Shared styling ---------------------------------------------------------
 
 app_css <- HTML("
@@ -63,13 +66,13 @@ app_css <- HTML("
     .stats-col h4 { margin-top: 14px; }
     .data-head { display: flex; align-items: baseline; gap: 10px; }
     .data-head h4 { margin-bottom: 6px; }
-    /* t-test results readout below the plot. */
-    .ttest-box { border: 1px solid #d4d4d4; border-radius: 6px;
-                 background: #fafafa; padding: 8px 12px; margin-top: 10px;
-                 max-width: 460px; }
-    .ttest-box .ttest-title { font-weight: bold; }
-    .ttest-box .apa { font-size: 108%; }
-    .ttest-box .decision { color: #5a6570; }
+    /* Results readout below a plot (used by both generators). */
+    .result-box { border: 1px solid #d4d4d4; border-radius: 6px;
+                  background: #fafafa; padding: 8px 12px; margin-top: 10px;
+                  max-width: 460px; }
+    .result-box .result-title { font-weight: bold; }
+    .result-box .apa { font-size: 108%; }
+    .result-box .decision { color: #5a6570; }
     /* Navigation and instructions. */
     .nav-back { margin: 8px 0 0 2px; font-size: 95%; }
     .instructions-wrap { max-width: 860px; }
@@ -161,7 +164,8 @@ corrUI <- function(id) {
                     div(
                         class = "plot-col",
                         tags$h4("Scatterplot"),
-                        plotOutput(ns("scatter"), height = "500px")
+                        plotOutput(ns("scatter"), height = "500px"),
+                        uiOutput(ns("cor_result"))
                     )
                 )
             )
@@ -347,6 +351,31 @@ corrServer <- function(id) {
                    legend = c("Population line (the true model)",
                               "Sample regression line"),
                    col = c("grey40", "firebrick"), lwd = 2, lty = c(2, 1))
+        })
+
+        output$cor_result <- renderUI({
+            d <- sim_data()
+            ct <- cor.test(d$X, d$Y)          # Pearson; df = N - 2
+            sig <- ct$p.value < .05
+
+            # Fisher-z CI needs N > 3; guard the small-N case.
+            ci <- if (length(ct$conf.int) == 2)
+                sprintf("95%% CI [%s, %s]",
+                        fmt_r(ct$conf.int[1]), fmt_r(ct$conf.int[2]))
+            else NULL
+
+            div(class = "result-box",
+                div(class = "result-title", "Pearson correlation"),
+                div(class = "apa", HTML(sprintf(
+                    "<i>r</i>(%d) = %s, <i>p</i> %s",
+                    round(ct$parameter), fmt_r(ct$estimate), fmt_p(ct$p.value)
+                ))),
+                if (!is.null(ci)) div(HTML(ci)),
+                div(class = "decision", sprintf(
+                    "The correlation is %sstatistically significant at α = .05.",
+                    if (sig) "" else "not "
+                ))
+            )
         })
     })
 }
@@ -570,8 +599,8 @@ ttestServer <- function(id) {
             samp_d <- (mean(s2) - mean(s1)) / sqrt((var(s1) + var(s2)) / 2)
             sig <- tt$p.value < .05
 
-            div(class = "ttest-box",
-                div(class = "ttest-title", "Independent-samples t-test"),
+            div(class = "result-box",
+                div(class = "result-title", "Independent-samples t-test"),
                 div(class = "apa", HTML(sprintf(
                     "<i>t</i>(%d) = %s, <i>p</i> %s, <i>d</i> = %s",
                     round(tt$parameter), fmt(tt$statistic), fmt_p(tt$p.value),
