@@ -73,6 +73,14 @@ app_css <- HTML("
     .result-box .result-title { font-weight: bold; }
     .result-box .apa { font-size: 108%; }
     .result-box .decision { color: #5a6570; }
+    /* The primary box is the one students should model their write-up on;
+       make it stand out from the supplementary boxes below it. */
+    .result-box.primary { border: 2px solid #2c5f8a; background: #eef4fa; }
+    .result-box.primary .result-title { color: #204c6e; }
+    .result-flag { display: inline-block; font-size: 78%; font-weight: bold;
+                   text-transform: uppercase; letter-spacing: .04em;
+                   color: #fff; background: #2c5f8a; border-radius: 3px;
+                   padding: 1px 7px; margin-bottom: 6px; }
     /* Navigation and instructions. */
     .nav-back { margin: 8px 0 0 2px; font-size: 95%; }
     .instructions-wrap { max-width: 860px; }
@@ -365,7 +373,8 @@ corrServer <- function(id) {
                         fmt_r(ct$conf.int[1]), fmt_r(ct$conf.int[2]))
             else NULL
 
-            div(class = "result-box",
+            div(class = "result-box primary",
+                div(class = "result-flag", "Model write-up"),
                 div(class = "result-title", "Pearson correlation"),
                 div(class = "apa", HTML(sprintf(
                     "<i>r</i>(%d) = %s, <i>p</i> %s",
@@ -632,7 +641,8 @@ ttestServer <- function(id) {
             samp_d <- (mean(s2) - mean(s1)) / sqrt((var(s1) + var(s2)) / 2)
             sig <- tt$p.value < .05
 
-            div(class = "result-box",
+            div(class = "result-box primary",
+                div(class = "result-flag", "Model write-up"),
                 div(class = "result-title", "Independent-samples t-test"),
                 div(class = "apa", HTML(sprintf(
                     "<i>t</i>(%d) = %s, <i>p</i> %s, <i>d</i> = %s",
