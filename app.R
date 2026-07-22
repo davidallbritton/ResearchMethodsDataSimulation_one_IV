@@ -833,6 +833,7 @@ pairedUI <- function(id) {
                             downloadButton(ns("download_csv"), "CSV",
                                            class = "btn-xs")
                         ),
+                        helpText(sprintf("Score1 = %s, Score2 = %s.", C1, C2)),
                         div(
                             style = "max-height: 420px; overflow-y: auto;",
                             tableOutput(ns("data_table"))
