@@ -25,6 +25,10 @@ ID_LABEL <- "Participant"
 G1 <- "Group 1"
 G2 <- "Group 2"
 
+# Condition names for the paired t-test (the two measurements per participant).
+C1 <- "Condition 1"
+C2 <- "Condition 2"
+
 # ---- Shared formatting helpers ----------------------------------------------
 
 # One display format everywhere on screen: 2 decimals.
@@ -749,6 +753,365 @@ ttestServer <- function(id) {
 }
 
 # =============================================================================
+#  Paired-samples (dependent) t-test module
+#
+#  Like the independent module, but each participant is measured twice and the
+#  two measurements are CORRELATED. That correlation is a third population
+#  parameter: the stronger it is, the smaller the SD of the difference scores
+#  (sd_D = sqrt(s1^2 + s2^2 - 2*rho*s1*s2)), and the more powerful the test.
+# =============================================================================
+
+pairedUI <- function(id) {
+    ns <- NS(id)
+    tagList(
+        titlePanel("Simulate Data: Paired-samples t-test"),
+        sidebarLayout(
+
+            sidebarPanel(
+                width = 4,
+
+                div(
+                    class = "param-box",
+
+                    span(class = "box-title", "Population parameters"),
+                    div(class = "box-note",
+                        "Each participant is measured twice. Set the true mean and
+                         SD of each measurement, plus how strongly the two
+                         measurements are correlated."),
+
+                    span(class = "var-head", paste0(C1, "  (measurement 1)")),
+                    numericInput(ns("mean_c1"), "Mean of Condition 1:", value = 100),
+                    numericInput(ns("sd_c1"),   "SD of Condition 1:",   value = 15,
+                                 min = 0),
+
+                    span(class = "var-head", paste0(C2, "  (measurement 2)")),
+                    numericInput(ns("mean_c2"), "Mean of Condition 2:", value = 110),
+                    numericInput(ns("sd_c2"),   "SD of Condition 2:",   value = 15,
+                                 min = 0),
+
+                    numericInput(ns("rho"),
+                                 "Correlation between the two measurements (r):",
+                                 value = 0.5, min = -1, max = 1, step = 0.05),
+
+                    uiOutput(ns("dz_preview"))
+                ),
+
+                # Sample size and the button sit outside the box.
+                div(
+                    class = "sample-controls",
+                    fluidRow(
+                        column(6, numericInput(ns("n"),
+                                               "Number of participants (n):",
+                                               value = 30, min = 2, step = 1)),
+                        column(6, div(style = "margin-top: 25px;",
+                                      actionButton(ns("generate"), "Generate Data",
+                                                   class = "btn-primary",
+                                                   width = "100%")))
+                    )
+                ),
+
+                tags$hr(),
+                tags$strong("The model"),
+                uiOutput(ns("equations")),
+
+                tags$hr(),
+                tags$strong("R code"),
+                verbatimTextOutput(ns("code"))
+            ),
+
+            mainPanel(
+                width = 8,
+                div(
+                    class = "panel-row",
+                    div(
+                        class = "stats-col",
+                        tags$h4("Descriptive Statistics"),
+                        tableOutput(ns("sample_stats")),
+                        div(
+                            class = "data-head",
+                            tags$h4("Sample Data"),
+                            downloadButton(ns("download_csv"), "CSV",
+                                           class = "btn-xs")
+                        ),
+                        div(
+                            style = "max-height: 420px; overflow-y: auto;",
+                            tableOutput(ns("data_table"))
+                        )
+                    ),
+                    div(
+                        class = "plot-col",
+                        tags$h4("Paired Scores Comparison"),
+                        plotOutput(ns("pairplot"), height = "500px"),
+                        uiOutput(ns("ttest_result")),
+                        uiOutput(ns("anova_result")),
+                        uiOutput(ns("cor_result"))
+                    )
+                )
+            )
+        )
+    )
+}
+
+pairedServer <- function(id) {
+    moduleServer(id, function(input, output, session) {
+
+        # Everything implied by a set of parameter values.
+        derive <- function(mean_c1, sd_c1, mean_c2, sd_c2, rho) {
+            sd_c1 <- abs(sd_c1); sd_c2 <- abs(sd_c2)
+            rho   <- max(-0.99, min(0.99, rho))   # keep sd_D > 0 and generation valid
+            sd_D  <- sqrt(sd_c1^2 + sd_c2^2 - 2 * rho * sd_c1 * sd_c2)
+            list(
+                mean_c1 = mean_c1, sd_c1 = sd_c1, mean_c2 = mean_c2, sd_c2 = sd_c2,
+                rho = rho, sd_D = sd_D, diff = mean_c2 - mean_c1,
+                dz = if (sd_D > 0) (mean_c2 - mean_c1) / sd_D else 0
+            )
+        }
+
+        live <- reactive({
+            req(input$sd_c1, input$sd_c2, input$rho)
+            derive(input$mean_c1, input$sd_c1, input$mean_c2, input$sd_c2, input$rho)
+        })
+
+        params <- eventReactive(input$generate, {
+            p <- derive(input$mean_c1, input$sd_c1, input$mean_c2, input$sd_c2,
+                        input$rho)
+            p$n <- max(2, round(input$n))
+            p
+        }, ignoreNULL = FALSE)
+
+        # Two correlated measurements per participant (same construction as the
+        # correlation module: measurement 2 is measurement 1's z-score, blended
+        # with fresh noise in proportion rho).
+        sim_data <- reactive({
+            p <- params()
+            z  <- rnorm(p$n)
+            s1 <- p$mean_c1 + p$sd_c1 * z
+            s2 <- p$mean_c2 + p$sd_c2 * (p$rho * z + sqrt(1 - p$rho^2) * rnorm(p$n))
+            data.frame(Score1 = round(s1, 2), Score2 = round(s2, 2))
+        })
+
+        output$dz_preview <- renderUI({
+            p <- live()
+            helpText(HTML(sprintf(
+                "These settings give: SD of the differences = <b>%s</b>,
+                 Cohen's <i>d<sub>z</sub></i> = <b>%s</b>.<br/>A higher correlation
+                 shrinks the difference SD and strengthens the effect.",
+                fmt(p$sd_D), fmt(p$dz)
+            )))
+        })
+
+        output$equations <- renderUI({
+            p <- params()
+            withMathJax(
+                helpText("Each participant is measured twice; the two scores are
+                          correlated:"),
+                helpText(sprintf(
+                    "$$\\text{Score}_{i,1} = \\mu_1 + e_{i,1}
+                       \\quad (\\mu_1 = %s,\\ \\sigma_1 = %s)$$",
+                    fmt(p$mean_c1), fmt(p$sd_c1)
+                )),
+                helpText(sprintf(
+                    "$$\\text{Score}_{i,2} = \\mu_2 + e_{i,2}
+                       \\quad (\\mu_2 = %s,\\ \\sigma_2 = %s),
+                       \\quad \\text{cor} = %s$$",
+                    fmt(p$mean_c2), fmt(p$sd_c2), fmt(p$rho)
+                )),
+                helpText("The test uses each participant's difference score,
+                          \\(D_i = \\text{Score}_{i,2} - \\text{Score}_{i,1}\\):"),
+                helpText(sprintf(
+                    "$$d_z = \\frac{\\mu_2 - \\mu_1}{\\sigma_D}, \\quad
+                       \\sigma_D = \\sqrt{\\sigma_1^2 + \\sigma_2^2
+                                          - 2\\rho\\sigma_1\\sigma_2} = %s$$",
+                    fmt(p$sd_D)
+                ))
+            )
+        })
+
+        output$code <- renderText({
+            p <- params()
+            paste0(
+                "n <- ", p$n, "\n",
+                "# two correlated measurements per participant (r = ",
+                    fmt_code(p$rho), ")\n",
+                "z <- rnorm(n)\n",
+                "Score1 <- ", fmt_code(p$mean_c1), " + ", fmt_code(p$sd_c1),
+                    " * z\n",
+                "Score2 <- ", fmt_code(p$mean_c2), " + ", fmt_code(p$sd_c2),
+                    " * (", fmt_code(p$rho), " * z + sqrt(1 - ", fmt_code(p$rho),
+                    "^2) * rnorm(n))\n",
+                "\n",
+                "t.test(Score2, Score1, paired = TRUE)\n",
+                "cor(Score1, Score2)"
+            )
+        })
+
+        labelled_data <- reactive({
+            d <- sim_data()
+            out <- cbind(seq_len(nrow(d)), d)
+            names(out)[1] <- ID_LABEL
+            out
+        })
+
+        output$data_table <- renderTable({
+            labelled_data()
+        }, digits = 2, striped = TRUE)
+
+        output$download_csv <- downloadHandler(
+            filename = function() {
+                paste0("simulated_paired_data_",
+                       format(Sys.Date(), "%Y-%m-%d"), ".csv")
+            },
+            content = function(file) {
+                write.csv(labelled_data(), file, row.names = FALSE)
+            }
+        )
+
+        output$sample_stats <- renderTable({
+            d <- sim_data(); p <- params()
+            s1 <- d$Score1; s2 <- d$Score2; D <- s2 - s1
+            samp_dz <- if (sd(D) > 0) mean(D) / sd(D) else 0
+
+            greek <- c("μ₁", "σ₁", "μ₂", "σ₂", "ρ", "μ₂−μ₁", "δ")
+            roman <- c("M₁", "s₁", "M₂", "s₂", "r", "M₂−M₁", "d")
+            pop   <- c(p$mean_c1, p$sd_c1, p$mean_c2, p$sd_c2, p$rho, p$diff, p$dz)
+            samp  <- c(mean(s1), sd(s1), mean(s2), sd(s2),
+                       cor(s1, s2), mean(D), samp_dz)
+
+            data.frame(
+                " "           = c("Mean of Condition 1", "SD of Condition 1",
+                                  "Mean of Condition 2", "SD of Condition 2",
+                                  "Correlation of C1 & C2",
+                                  "Mean difference", "Cohen's d (dz)"),
+                "Population"  = paste(greek, "=", fmt(pop)),
+                "This sample" = paste(roman, "=", fmt(samp)),
+                check.names = FALSE
+            )
+        }, striped = TRUE, colnames = TRUE, rownames = FALSE, align = "lrr")
+
+        output$ttest_result <- renderUI({
+            d <- sim_data()
+            s1 <- d$Score1; s2 <- d$Score2; D <- s2 - s1
+            tt <- t.test(s2, s1, paired = TRUE)
+            samp_dz <- if (sd(D) > 0) mean(D) / sd(D) else 0
+            sig <- tt$p.value < .05
+
+            div(class = "result-box primary",
+                div(class = "result-flag", "Model write-up"),
+                div(class = "result-title", "Paired-samples t-test"),
+                div(class = "apa", HTML(sprintf(
+                    "<i>t</i>(%d) = %s, <i>p</i> %s, <i>d<sub>z</sub></i> = %s",
+                    round(tt$parameter), fmt(tt$statistic), fmt_p(tt$p.value),
+                    fmt(samp_dz)
+                ))),
+                div(HTML(sprintf(
+                    "Mean difference = %s, 95%% CI [%s, %s]",
+                    fmt(mean(D)), fmt(tt$conf.int[1]), fmt(tt$conf.int[2])
+                ))),
+                div(class = "decision", sprintf(
+                    "The difference is %sstatistically significant at α = .05.",
+                    if (sig) "" else "not "
+                ))
+            )
+        })
+
+        # Just for fun: the same comparison as a repeated-measures ANOVA. With
+        # two conditions F = t^2 and the p-value is identical to the paired
+        # t-test above.
+        output$anova_result <- renderUI({
+            d <- sim_data()
+            s1 <- d$Score1; s2 <- d$Score2
+            tt <- t.test(s2, s1, paired = TRUE)
+            Fv <- tt$statistic^2
+            df2 <- round(tt$parameter)               # n - 1
+            eta2 <- Fv / (Fv + df2)                  # partial eta^2
+
+            div(class = "result-box",
+                div(class = "result-title", "Repeated-measures ANOVA"),
+                div(class = "apa", HTML(sprintf(
+                    "<i>F</i>(1, %d) = %s, <i>p</i> %s",
+                    df2, fmt(Fv), fmt_p(tt$p.value)
+                ))),
+                div(HTML(sprintf("partial &eta;&sup2; = %s", fmt_r(eta2)))),
+                div(class = "decision",
+                    "Same p as the paired t-test — with two conditions, F = t².")
+            )
+        })
+
+        # The score1-score2 correlation: the paired-specific relationship. The
+        # stronger it is, the smaller the SD of the differences and the more
+        # powerful the test.
+        output$cor_result <- renderUI({
+            d <- sim_data()
+            ct <- cor.test(d$Score1, d$Score2)
+
+            ci <- if (length(ct$conf.int) == 2)
+                sprintf("95%% CI [%s, %s]",
+                        fmt_r(ct$conf.int[1]), fmt_r(ct$conf.int[2]))
+            else NULL
+
+            div(class = "result-box",
+                div(class = "result-title",
+                    "Correlation between the two measurements"),
+                div(class = "apa", HTML(sprintf(
+                    "<i>r</i>(%d) = %s, <i>p</i> %s",
+                    round(ct$parameter), fmt_r(ct$estimate), fmt_p(ct$p.value)
+                ))),
+                if (!is.null(ci)) div(HTML(ci)),
+                div(class = "decision",
+                    "Higher r → smaller SD of the differences → a more powerful
+                     paired test.")
+            )
+        })
+
+        # Y-axis range from the MODEL, so the frame and the population-mean lines
+        # stay put when students regenerate with the same parameters.
+        y_limits <- reactive({
+            p <- params()
+            k <- max(3, qnorm(1 - (1 - 0.9^(1 / (2 * p$n))) / 2))
+            lo <- min(p$mean_c1 - k * p$sd_c1, p$mean_c2 - k * p$sd_c2)
+            hi <- max(p$mean_c1 + k * p$sd_c1, p$mean_c2 + k * p$sd_c2)
+            if (lo == hi) c(lo - 1, hi + 1) else c(lo, hi)
+        })
+
+        output$pairplot <- renderPlot({
+            d <- sim_data(); p <- params(); ylim <- y_limits()
+            s1 <- d$Score1; s2 <- d$Score2; D <- s2 - s1
+            samp_dz <- if (sd(D) > 0) mean(D) / sd(D) else 0
+
+            xpos <- c(1, 2)
+            plot(NA, xlim = c(0.5, 2.5), ylim = ylim,
+                 xaxt = "n", xlab = "", ylab = "Score (DV)",
+                 main = paste("Sample d_z =", fmt(samp_dz)))
+            axis(1, at = xpos, labels = c(C1, C2))
+
+            # faint line linking each participant's two scores (the pairing)
+            segments(xpos[1], s1, xpos[2], s2,
+                     col = adjustcolor("grey30", alpha.f = 0.35), lwd = 1)
+            points(rep(xpos[1], length(s1)), s1, pch = 19, col = "steelblue")
+            points(rep(xpos[2], length(s2)), s2, pch = 19, col = "steelblue")
+
+            seg <- 0.28
+            # population means: grey dashed
+            segments(xpos - seg, c(p$mean_c1, p$mean_c2),
+                     xpos + seg, c(p$mean_c1, p$mean_c2),
+                     col = "grey40", lwd = 2, lty = 2)
+            # sample means: red solid
+            segments(xpos - seg, c(mean(s1), mean(s2)),
+                     xpos + seg, c(mean(s1), mean(s2)),
+                     col = "firebrick", lwd = 2)
+
+            legend("topleft", bty = "n",
+                   legend = c("Each participant (paired scores)",
+                              "Population means (the true model)",
+                              "Sample means"),
+                   col = c(adjustcolor("grey30", alpha.f = 0.5),
+                           "grey40", "firebrick"),
+                   lwd = c(1, 2, 2), lty = c(1, 2, 1))
+        })
+    })
+}
+
+# =============================================================================
 #  Instructions (landing) page
 # =============================================================================
 
@@ -786,7 +1149,20 @@ instructionsUI <- function() {
                          class = "btn-primary btn-lg")
         ),
 
-        h4("How to use either generator"),
+        div(
+            class = "gen-card",
+            h3("Paired-samples t-test"),
+            p("For comparing two measurements taken on the ", em("same"),
+              " participants (e.g. before vs. after) on a continuous outcome
+               (DV). You set each measurement's population mean and SD, plus how
+               strongly the two measurements are correlated. The app draws a
+               sample, shows each participant's paired scores, and reports the
+               paired t-test and Cohen's d."),
+            actionButton("to_paired", "Generate paired t-test data →",
+                         class = "btn-primary btn-lg")
+        ),
+
+        h4("How to use any generator"),
         tags$ol(
             tags$li("Type the population parameters on the left."),
             tags$li("Set how many cases to draw, then click ",
@@ -827,6 +1203,13 @@ ui <- fluidPage(
             div(class = "nav-back",
                 actionLink("home_from_ttest", "← Instructions")),
             ttestUI("ttest")
+        ),
+
+        tabPanelBody(
+            "paired",
+            div(class = "nav-back",
+                actionLink("home_from_paired", "← Instructions")),
+            pairedUI("paired")
         )
     )
 )
@@ -834,14 +1217,17 @@ ui <- fluidPage(
 server <- function(input, output, session) {
 
     # Page navigation.
-    observeEvent(input$to_corr,        updateTabsetPanel(session, "nav", "corr"))
-    observeEvent(input$to_ttest,       updateTabsetPanel(session, "nav", "ttest"))
-    observeEvent(input$home_from_corr, updateTabsetPanel(session, "nav", "instructions"))
-    observeEvent(input$home_from_ttest,updateTabsetPanel(session, "nav", "instructions"))
+    observeEvent(input$to_corr,         updateTabsetPanel(session, "nav", "corr"))
+    observeEvent(input$to_ttest,        updateTabsetPanel(session, "nav", "ttest"))
+    observeEvent(input$to_paired,       updateTabsetPanel(session, "nav", "paired"))
+    observeEvent(input$home_from_corr,  updateTabsetPanel(session, "nav", "instructions"))
+    observeEvent(input$home_from_ttest, updateTabsetPanel(session, "nav", "instructions"))
+    observeEvent(input$home_from_paired,updateTabsetPanel(session, "nav", "instructions"))
 
     # Generators.
     corrServer("corr")
     ttestServer("ttest")
+    pairedServer("paired")
 }
 
 shinyApp(ui = ui, server = server)
