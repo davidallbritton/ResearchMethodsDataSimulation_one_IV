@@ -3,20 +3,27 @@
 #
 # A teaching app: students choose population parameters and generate fake data
 # for class projects, then download it as CSV to analyze in their stats
-# software. Two generators, each on its own page:
+# software. Three generators, each on its own page:
 #
-#   * Scatterplot / correlation  (correlation module)
-#   * Independent-samples t-test (ttest module)
+#   * Scatterplot / correlation    (correlation module)
+#   * Independent-samples t-test   (ttest module)
+#   * Paired-samples t-test        (paired module)
 #
-# A landing "Instructions" page explains both and links to each. Navigation
-# uses a HIDDEN tabsetPanel (no visible tab bar, to save screen space); the
-# buttons/links call updateTabsetPanel() to switch pages. Each generator is a
-# Shiny module, so their (identical) input/output IDs never collide.
+# A landing "Instructions" page explains all three and links to each.
+# Navigation uses a HIDDEN tabsetPanel (no visible tab bar, to save screen
+# space); the buttons/links call updateTabsetPanel() to switch pages. Each
+# generator is a Shiny module, so their (identical) input/output IDs never
+# collide. APP_VERSION below is shown in a footer on every page, so the
+# deployed build can be identified at a glance.
 #
 
 library(shiny)
 
 # ---- Shared constants -------------------------------------------------------
+
+# App version, shown in the footer. Bump this whenever you deploy a change, so
+# what students see on screen tells you which build is live.
+APP_VERSION <- "1.0.0"
 
 # Label for the row-number column, on screen and in the downloaded CSV.
 ID_LABEL <- "Participant"
@@ -91,6 +98,10 @@ app_css <- HTML("
     .gen-card { border: 1px solid #b8c4d0; border-radius: 6px;
                 background: #f4f7fa; padding: 14px 18px; margin-bottom: 16px; }
     .gen-card h3 { margin-top: 4px; }
+    /* Version footer, shown under every page. */
+    .app-footer { margin: 28px 0 10px 0; padding-top: 8px;
+                  border-top: 1px solid #e0e0e0; color: #7a838c;
+                  font-size: 85%; }
 ")
 
 # =============================================================================
@@ -1212,7 +1223,11 @@ ui <- fluidPage(
                 actionLink("home_from_paired", "← Instructions")),
             pairedUI("paired")
         )
-    )
+    ),
+
+    # Outside the tabset, so it appears on every page.
+    div(class = "app-footer",
+        paste0("Research Methods Data Simulator \u00b7 version ", APP_VERSION))
 )
 
 server <- function(input, output, session) {
