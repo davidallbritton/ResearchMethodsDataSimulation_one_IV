@@ -55,14 +55,21 @@ testServer(ttestServer, args=list(id="t"), {
                     iv_cols=c("items","mean"),
                     dv_use=TRUE, dv_items=5, dv_min=1, dv_max=5, dv_rel=.8,
                     dv_cols="mean", generate=1, x_gen=0, y_gen=0, iv_gen=0, dv_gen=0)
+  # The DV scale is measurement: redrawing it must not disturb the sample.
+  # The IV scale is the design -- the groups ARE a median split of it -- so
+  # redrawing that necessarily reassigns people, and the DV moves with them.
   s1 <- sim_data(); iv1 <- scaled_iv()$mean; dv1 <- scaled_dv()$mean
-  session$setInputs(iv_gen=1, dv_gen=1)
-  ok("sample unchanged", identical(s1, sim_data()))
+  session$setInputs(dv_gen=1)
+  ok("DV redraw leaves the sample alone", identical(s1, sim_data()))
+  ok("DV redraw leaves the IV scale alone", identical(iv1, scaled_iv()$mean))
   ok("DV scale redrawn", !identical(dv1, scaled_dv()$mean))
+
+  session$setInputs(iv_gen=1)
   ok("IV scale redrawn", !identical(iv1, scaled_iv()$mean))
-  ok("IV median split STILL reproduces the groups", {
-     m <- scaled_iv()$mean; g <- sim_data()$Group
-     max(m[g==G1]) <= min(m[g==G2]) })
+  ok("IV redraw reassigns the groups, so the DV moves too",
+     !identical(s1$Score, sim_data()$Score))
+  ok("the grouping is still the median split of the IV scale",
+     all(sim_data()$Group == median_split_groups(scaled_iv()$mean)))
 })
 
 cat("\n== PAIRED: same guarantees ==\n")

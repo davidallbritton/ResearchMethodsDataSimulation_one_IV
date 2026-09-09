@@ -62,12 +62,17 @@ testServer(ttestServer, args=list(id="t"), {
     iv_use=TRUE, iv_items=4, iv_min=1, iv_max=7, iv_rel=.8, iv_cols=c("items","mean"),
     dv_use=TRUE, dv_items=5, dv_min=1, dv_max=5, dv_rel=.8, dv_cols="mean",
     generate=1, iv_gen=0, dv_gen=0)
-  dv1 <- scaled_dv()$mean
+  dv1 <- scaled_dv()$mean; iv1 <- scaled_iv()$mean
+  session$setInputs(dv_gen=1)
+  ok("DV button leaves the IV alone", identical(iv1, scaled_iv()$mean))
+
+  # The groups come from a median split of the IV scale, so redrawing the IV
+  # scale is redrawing the design: people change groups and the DV follows.
   session$setInputs(iv_gen=1)
-  ok("IV button left the DV alone", identical(dv1, scaled_dv()$mean))
-  ok("median split still reproduces the groups", {
-     m <- scaled_iv()$mean; g <- sim_data()$Group
-     max(m[g==G1]) <= min(m[g==G2]) })
+  ok("IV button redraws the design, so the DV changes with it",
+     !identical(dv1, scaled_dv()$mean))
+  ok("the grouping is still reproducible from the IV scale",
+     all(sim_data()$Group == median_split_groups(scaled_iv()$mean)))
   ok("'raw' for the IV yields the Group column", {
      session$setInputs(iv_cols=c("items","mean","raw"))
      "Group" %in% names(labelled_data()) })

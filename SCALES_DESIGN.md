@@ -102,15 +102,55 @@ by side. It is **not** corrected for.
 
 ## Decisions made while building
 
-### Independent t-test IV: decorative, and exactly consistent
-Resolved in favour of keeping the panel's existing controls. The student still
-sets both group means and SDs; those still drive the DV. The IV scale is
-generated separately, then its rows are ordered so the low half of the scale
-means go to Group 1 and the high half to Group 2. A median split of
-`Group_Scale_Mean` therefore reproduces the grouping **exactly**, with no need
-for the reference app's tie-fixing block. If two scale means tie across the
-split, the app's assignment is still a valid split, but a student's own median
-split might break the tie the other way.
+### Independent t-test IV: generative, and honestly uneven
+
+**Reversed from the original decision.** The IV scale was first built as
+"decorative": groups stayed fixed and equal, and the scale was reordered to
+match them. That forced an exact 50/50 split of a coarse variable, so the cut
+usually landed inside a tie and several participants were assigned arbitrarily
+— and a student re-splitting the column themselves would have got a different
+grouping and a different t-test than the results box reported.
+
+Now the grouping **is** a median split of the scale: low group at or below the
+median, ties included, so it is reproducible from the CSV. The groups therefore
+come out uneven, which is what splitting a real measured variable does.
+
+How common ties are (3,000 samples per row):
+
+| n/group | items | range | possible means | cut lands in a tie | people sharing it |
+|---------|-------|-------|----------------|--------------------|-------------------|
+| 15 | 4 | 1-7 | 25 | 66% | 4.0 |
+| 30 | 4 | 1-7 | 25 | **81%** | 6.6 |
+| 50 | 4 | 1-7 | 25 | 89% | 10.0 |
+| 30 | 10 | 1-7 | 61 | 67% | 4.2 |
+
+Adding items barely helps: ten items on a 1-7 scale still ties two thirds of
+the time. A bounded discrete measure has few possible means and many people.
+The resulting imbalance is mild — mean group-size gap of 2.7 at n=30, so
+typically 31/29.
+
+A warning names the realized group sizes and explains why they differ. Beside
+it sits **Force equal group sizes (not how real data works)**:
+`force_equal_split()` lifts the fewest tied participants past the median by +1
+on a single item — 1/items on the scale mean, the smallest change the scale can
+express — and leaves every other score exactly as generated. It is a pure
+transform of the existing draw, so asking for equal groups never re-randomizes
+anything, and an undo link restores the original scores. The forced state
+resets whenever a new sample or a new IV scale is drawn, so the honest
+behaviour is what a student meets first every time.
+
+Consequences worth knowing:
+
+- **The IV scale is the design, not a measurement overlay.** Redrawing it
+  reassigns people to groups, so the DV moves with them. The DV scale keeps its
+  redraw isolation; the IV scale cannot have it, because group membership is
+  not something you can resample independently of the grouping.
+- **"Cases per group (n)" becomes nominal** when the IV scale is on: it sets
+  2n participants, split roughly rather than exactly in half. The realized
+  sizes are shown as a row in the descriptives.
+- **One group can end up empty** if the scale has almost no spread (Typical
+  response pinned to an endpoint). `msg_empty_group()` explains that instead of
+  letting the t-test fail.
 
 ### Paired panel gets no IV scale
 The IV there is the repeated measure itself, so a Likert IV has no meaning.
@@ -269,6 +309,8 @@ and both forms work from the project root or from inside `tests/`.
 | `test_guard.R` | degenerate settings explain themselves instead of erroring |
 | `test_plot_axes.R` | scale variables are plotted on their full response range |
 | `test_code_block.R` | the R code box runs and reproduces the reported analysis |
+| `test_median_split.R` | the measured IV splits honestly; the force button nudges minimally |
+| `test_module_wiring.R` | every UI slot is rendered by its own module's server |
 
 `helper.R` finds `app.R` by walking up from the working directory, loads it
 without calling `shinyApp()`, and provides `ok()` plus the tally the runner
@@ -279,6 +321,13 @@ Two notes for anyone adding tests:
 - **Pin the seed.** `test_guard.R` and `test_outputs.R` originally had none, and
   a result flipped purely because running from a different directory changed the
   RNG state.
+- **Beware edits anchored on text common to all three modules.** They land in
+  whichever module comes first in the file. This has happened three times: the
+  paired panel's slider observer went to the t-test module, the t-test module
+  got a duplicate, and `output$split_note` was defined in `corrServer` while its
+  UI slot sat in `ttestUI`. None errored — the misplaced code was simply dead,
+  and every behavioural test still passed. `test_module_wiring.R` now checks
+  this structurally.
 - **Do not use `on.exit()` at the top level of a test file.** Sourced by the
   runner it fires as soon as that one expression finishes, so cleanup runs
   before any test does; run standalone it never fires at all. `test_plot_axes.R`

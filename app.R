@@ -288,6 +288,14 @@ msg_no_within_variance <- function() {
      always has some spread inside each group."
 }
 
+# The split put nobody on one side.
+msg_empty_group <- function() {
+    "Every participant fell on the same side of the median, so one group is
+     empty and there is nothing to compare. The scale has almost no spread \u2014
+     move \u201cTypical response\u201d away from the end of the scale, or raise
+     the population SD."
+}
+
 # Computable, but only just: worth a caution rather than a refusal.
 caution_note <- function(v, k_min, k_max) {
     v <- as.numeric(v)
@@ -333,6 +341,56 @@ scale_axis <- function(side, st) {
         at <- unique(c(seq(r[1], r[2], by = step), r[2]))
     }
     axis(side, at = at)
+}
+
+# ---- Median split of a measured IV ------------------------------------------
+#
+# When the grouping IV is measured as a Likert scale, the groups come from a
+# median split of that scale -- the same split a student would perform, so the
+# Group column can be reproduced from the data they are given.
+#
+# Ties at the median are the normal case, not an edge case: a bounded discrete
+# scale has few possible means and many participants. At the defaults (30 per
+# group, 4 items, 1-7) the middle two scores tie in about 81% of samples, with
+# roughly 6 or 7 people sharing that value, and adding items barely helps --
+# ten items on a 1-7 scale still ties 67% of the time. Everyone sharing the
+# median value lands in the low group, so the groups come out unequal. That is
+# how a real median split behaves and the app does not hide it.
+
+# The split a student would perform: the low group is at or below the median.
+median_split_groups <- function(m) {
+    factor(ifelse(m <= median(m), G1, G2), levels = c(G1, G2))
+}
+
+# Nudge the fewest scores by the smallest step that makes the split come out
+# even. Offered as an explicit choice, clearly labelled as unrealistic.
+#
+# Unequal groups happen precisely when the middle two scores tie, so the fix is
+# to lift the excess tied participants just past that value: +1 on a single
+# item, which moves the scale mean by 1/items -- the smallest change the scale
+# can express. Every other score is left exactly as generated.
+force_equal_split <- function(items, k_min, k_max) {
+    m  <- rowMeans(items)
+    nt <- length(m); half <- nt %/% 2
+    if (nt < 2) return(list(items = items, moved = 0L))
+    srt <- sort(m)
+    if (srt[half] != srt[half + 1]) return(list(items = items, moved = 0L))
+
+    v     <- srt[half]
+    tied  <- which(m == v)
+    n_up  <- sum(m < v) + length(tied) - half   # how many must rise
+
+    moved <- 0L
+    for (i in tied) {
+        if (moved >= n_up) break
+        row <- as.numeric(items[i, ])
+        j   <- which(row < k_max)
+        if (!length(j)) next                    # already at the ceiling
+        j   <- j[which.min(row[j])]             # lift the lowest item
+        items[i, j] <- row[j] + 1
+        moved <- moved + 1L
+    }
+    list(items = items, moved = moved)
 }
 
 # Which version of a variable the student will actually analyze -- that is,
@@ -413,19 +471,15 @@ scale_code_snippet <- function(st, var, ref_mean, ref_sd, source_expr = var) {
     )
 }
 
-# The t-test IV scale is generated free of the groups, then reordered so that a
-# median split of its scale mean reproduces them exactly.
-iv_code_snippet <- function(st, n) {
+# When the IV is measured as a scale, the groups ARE a median split of it.
+iv_code_snippet <- function(st) {
     if (!st$use) return("")
-    inner <- scale_code_snippet(st, "Group", 0, 1,
-                                source_expr = "rnorm(2 * n)")
     paste0(
-        inner,
-        "# hand the low half of the scale to Group 1, the high half to Group 2\n",
-        "ord <- order(Group_Scale_Mean)\n",
-        "ord <- c(ord[1:n], ord[(n + 1):(2 * n)])\n",
-        "Group_items <- Group_items[ord, ]\n",
-        "Group_Scale_Mean <- Group_Scale_Mean[ord]\n"
+        scale_code_snippet(st, "Group", 0, 1, source_expr = "rnorm(2 * n)"),
+        "# the grouping IS a median split of that scale, ties and all\n",
+        "Group <- ifelse(Group_Scale_Mean <= median(Group_Scale_Mean),\n",
+        "                \"", G1, "\", \"", G2, "\")\n",
+        "table(Group)   # rarely an even split, and that is the lesson\n"
     )
 }
 
@@ -492,6 +546,14 @@ app_css <- HTML("
         display: block; border: 1px solid #d9b38c; border-radius: 6px;
         background: #fdf6ec; color: #7a5320; padding: 8px 12px;
         margin-top: 10px; max-width: 460px; font-size: 95%; }
+    .split-warn { border: 1px solid #c9a227; border-radius: 6px;
+                  background: #fdf8e3; color: #6b5310; padding: 9px 12px;
+                  margin-bottom: 10px; max-width: 560px; font-size: 93%; }
+    .split-warn .btn { margin-top: 8px; }
+    .split-note { border: 1px solid #b8c4d0; border-radius: 6px;
+                  background: #f4f7fa; color: #44515e; padding: 8px 12px;
+                  margin-bottom: 10px; max-width: 560px; font-size: 90%; }
+    .split-note a { margin-left: 6px; }
     .caution-note { border: 1px solid #d9b38c; border-radius: 6px;
                     background: #fdf6ec; color: #7a5320; padding: 6px 10px;
                     margin-top: 8px; max-width: 460px; font-size: 90%; }
@@ -1071,6 +1133,7 @@ ttestUI <- function(id) {
                     div(
                         class = "plot-col",
                         tags$h4("Independent Groups Comparison"),
+                        uiOutput(ns("split_note")),
                         plotOutput(ns("dotplot"), height = "500px"),
                         uiOutput(ns("ttest_result")),
                         uiOutput(ns("anova_result")),
@@ -1118,14 +1181,53 @@ ttestServer <- function(id) {
         observe_scale_range(input, session, "iv")
         observe_scale_range(input, session, "dv")
 
-        sim_data <- reactive({
+        # Whether the current draw has been nudged to give equal groups. Reset
+        # by anything that produces a new draw, so the realistic behaviour is
+        # what a student meets first every time.
+        force_equal <- reactiveVal(FALSE)
+        observeEvent(input$iv_force, force_equal(TRUE))
+        observeEvent(input$iv_unforce, force_equal(FALSE))
+        observeEvent(list(input$generate, input$iv_gen), force_equal(FALSE))
+
+        # One sample's raw material: the latent construct the IV scale measures,
+        # and each person's standardized DV error. Drawn once per Generate Data,
+        # so nothing downstream can quietly redraw the sample.
+        raw_draw <- reactive({
             p <- params()
-            y1 <- rnorm(p$n, mean = p$mean1, sd = p$sd1)
-            y2 <- rnorm(p$n, mean = p$mean2, sd = p$sd2)
-            data.frame(
-                Group = factor(rep(c(G1, G2), each = p$n), levels = c(G1, G2)),
-                Score = round(c(y1, y2), 2)
-            )
+            list(latent = rnorm(2 * p$n), e = rnorm(2 * p$n))
+        })
+
+        # The IV items exactly as generated, before any nudging.
+        iv_items_raw <- reactive({
+            spec <- spec_iv()
+            make_scale_items(raw_draw()$latent, 0, 1, spec$items,
+                             spec$kmin, spec$kmax, spec$rel,
+                             target = spec_target(spec))
+        })
+
+        # Nudging is a pure transform of that draw, so asking for equal groups
+        # never re-randomizes the scores -- it only moves the few it must.
+        scaled_iv <- reactive({
+            if (!isTRUE(input$iv_use)) return(NULL)
+            spec <- spec_iv()
+            it <- iv_items_raw(); moved <- 0L
+            if (force_equal()) {
+                f <- force_equal_split(it, spec$kmin, spec$kmax)
+                it <- f$items; moved <- f$moved
+            }
+            rownames(it) <- NULL
+            list(items = it, mean = rowMeans(it), moved = moved)
+        })
+
+        sim_data <- reactive({
+            p <- params(); d <- raw_draw()
+            # With the IV measured as a scale, group membership IS the median
+            # split of that scale. Otherwise the groups are fixed and equal.
+            grp <- if (isTRUE(input$iv_use)) median_split_groups(scaled_iv()$mean)
+                   else factor(rep(c(G1, G2), each = p$n), levels = c(G1, G2))
+            mu <- ifelse(grp == G1, p$mean1, p$mean2)
+            sg <- ifelse(grp == G1, p$sd1,   p$sd2)
+            data.frame(Group = grp, Score = round(mu + sg * d$e, 2))
         })
 
         # DV: both groups must share ONE mapping, or standardizing each to its
@@ -1140,28 +1242,6 @@ ttestServer <- function(id) {
                                    spec$kmin, spec$kmax, spec$rel,
                                    target = spec_target(spec))
             list(items = it, mean = rowMeans(it))
-        })
-
-        # IV: generate a scale for everyone, then hand the low half of the scale
-        # means to Group 1 and the high half to Group 2. A median split of the
-        # scale mean then reproduces the grouping exactly, while the group means
-        # the student typed still drive the DV.
-        scaled_iv <- reactive({
-            if (!isTRUE(input$iv_use)) return(NULL)
-            d <- sim_data(); spec <- spec_iv()
-            nt <- nrow(d)
-            it <- make_scale_items(rnorm(nt), 0, 1, spec$items,
-                                   spec$kmin, spec$kmax, spec$rel,
-                                   target = spec_target(spec))
-            m   <- rowMeans(it)
-            ord <- order(m)
-            g1  <- which(d$Group == G1); g2 <- which(d$Group == G2)
-            idx <- integer(nt)
-            idx[g1] <- ord[seq_along(g1)]
-            idx[g2] <- ord[(length(g1) + 1):nt]
-            it2 <- it[idx, , drop = FALSE]
-            rownames(it2) <- NULL
-            list(items = it2, mean = m[idx])
         })
 
         scaled <- reactive(list(iv = scaled_iv(), dv = scaled_dv()))
@@ -1208,34 +1288,54 @@ ttestServer <- function(id) {
 
         output$code <- renderText({
             p <- params()
-            paste0(
-                "n <- ", p$n, "\n",
-                "group1 <- rnorm(n, mean = ", fmt_code(p$mean1),
-                    ", sd = ", fmt_code(p$sd1), ")\n",
-                "group2 <- rnorm(n, mean = ", fmt_code(p$mean2),
-                    ", sd = ", fmt_code(p$sd2), ")\n",
-                "\n",
-                # The scale is built on the whole sample, which the block has
-                # so far only as two separate group vectors.
-                if (sdv()$use || siv()$use)
-                    paste0("\n# the two groups as one data set\n",
-                           "Score <- c(group1, group2)\n",
-                           "Group <- rep(c(\"", G1, "\", \"", G2,
-                           "\"), each = n)\n") else "",
-                scale_code_snippet(sdv(), "Score",
-                                   (p$mean1 + p$mean2) / 2,
-                                   sqrt(p$sd_pooled^2 + (p$diff / 2)^2)),
-                iv_code_snippet(siv(), p$n),
-                "\n",
-                "# var.equal = TRUE gives Student's t (R defaults to Welch)\n",
-                if (analysis_choice(sdv()) == "mean")
-                    paste0("g1 <- Score_Scale_Mean[Group == \"", G1, "\"]\n",
-                           "g2 <- Score_Scale_Mean[Group == \"", G2, "\"]\n",
-                           "t.test(g2, g1, var.equal = TRUE)\n",
-                           "boxplot(g1, g2)")
-                else paste0("t.test(group2, group1, var.equal = TRUE)\n",
-                            "boxplot(group1, group2)")
-            )
+            dv_ref_m  <- (p$mean1 + p$mean2) / 2
+            dv_ref_sd <- sqrt(p$sd_pooled^2 + (p$diff / 2)^2)
+            av <- if (analysis_choice(sdv()) == "mean") "Score_Scale_Mean"
+                  else "Score"
+
+            if (siv()$use) {
+                # The IV is measured, so the design falls out of the split: the
+                # scale comes first, the groups come from it, and only then does
+                # each person get a DV from whichever group they landed in.
+                paste0(
+                    "n <- ", p$n, "   # per group BEFORE the split; ",
+                        2 * p$n, " participants in total\n",
+                    iv_code_snippet(siv()),
+                    "\n# each person's DV comes from the group the split put them in\n",
+                    "Score <- ifelse(Group == \"", G1, "\", ",
+                        fmt_code(p$mean1), ", ", fmt_code(p$mean2), ") +\n",
+                    "         ifelse(Group == \"", G1, "\", ",
+                        fmt_code(p$sd1), ", ", fmt_code(p$sd2),
+                        ") * rnorm(2 * n)\n",
+                    scale_code_snippet(sdv(), "Score", dv_ref_m, dv_ref_sd),
+                    "\n# var.equal = TRUE gives Student's t (R defaults to Welch)\n",
+                    "g1 <- ", av, "[Group == \"", G1, "\"]\n",
+                    "g2 <- ", av, "[Group == \"", G2, "\"]\n",
+                    "t.test(g2, g1, var.equal = TRUE)\n",
+                    "boxplot(g1, g2)")
+            } else {
+                paste0(
+                    "n <- ", p$n, "\n",
+                    "group1 <- rnorm(n, mean = ", fmt_code(p$mean1),
+                        ", sd = ", fmt_code(p$sd1), ")\n",
+                    "group2 <- rnorm(n, mean = ", fmt_code(p$mean2),
+                        ", sd = ", fmt_code(p$sd2), ")\n",
+                    if (sdv()$use)
+                        paste0("\n# the two groups as one data set\n",
+                               "Score <- c(group1, group2)\n",
+                               "Group <- rep(c(\"", G1, "\", \"", G2,
+                               "\"), each = n)\n") else "",
+                    scale_code_snippet(sdv(), "Score", dv_ref_m, dv_ref_sd),
+                    "\n",
+                    "# var.equal = TRUE gives Student's t (R defaults to Welch)\n",
+                    if (analysis_choice(sdv()) == "mean")
+                        paste0("g1 <- Score_Scale_Mean[Group == \"", G1, "\"]\n",
+                               "g2 <- Score_Scale_Mean[Group == \"", G2, "\"]\n",
+                               "t.test(g2, g1, var.equal = TRUE)\n",
+                               "boxplot(g1, g2)")
+                    else paste0("t.test(group2, group1, var.equal = TRUE)\n",
+                                "boxplot(group1, group2)"))
+            }
         })
 
         labelled_data <- reactive({
@@ -1262,6 +1362,40 @@ ttestServer <- function(id) {
                 write.csv(labelled_data(), file, row.names = FALSE)
             }
         )
+
+        output$split_note <- renderUI({
+            if (!isTRUE(input$iv_use)) return(NULL)
+            ns <- session$ns
+            d  <- sim_data()
+            n1 <- sum(d$Group == G1); n2 <- sum(d$Group == G2)
+
+            if (force_equal()) {
+                moved <- scaled_iv()$moved
+                return(div(
+                    class = "split-note",
+                    HTML(sprintf(
+                        "Group sizes forced to %d and %d by nudging <b>%d</b>
+                         scale score%s up one point on a single item. Real data
+                         does not oblige like this \u2014 the nudge is here so
+                         you can see what insisting on equal groups costs.",
+                        n1, n2, moved, if (moved == 1) "" else "s")),
+                    actionLink(ns("iv_unforce"), "Undo, show the real split")))
+            }
+            if (n1 == n2) return(NULL)
+            div(
+                class = "split-warn",
+                HTML(sprintf(
+                    "<b>The median split gave unequal groups: %d and %d.</b>
+                     Several participants share the same scale mean, and a
+                     median split must put all of them on the same side. This
+                     is what splitting a real measured variable does \u2014 the
+                     scale is too coarse to divide people evenly, and which
+                     side a tied participant lands on is decided by the cut-off
+                     rather than by anything about that person.", n1, n2)),
+                actionButton(ns("iv_force"),
+                             "Force equal group sizes (not how real data works)",
+                             class = "btn-xs btn-default"))
+        })
 
         output$sample_stats <- renderTable({
             d <- sim_data(); p <- params(); sc <- scaled()
@@ -1296,6 +1430,18 @@ ttestServer <- function(id) {
                     csv_cell(paste(roman, "=", fmt(stats_for(sc$dv$mean))),
                              !raw_in_csv)
             }
+
+            # With the IV measured as a scale the group sizes are an outcome of
+            # the split rather than something the student set, so show them.
+            if (isTRUE(input$iv_use)) {
+                n1 <- sum(d$Group == G1); n2 <- sum(d$Group == G2)
+                extra <- tab[1, ]
+                extra[[1]] <- "Group sizes"
+                extra[[2]] <- paste0("N = ", nrow(d))
+                for (k in seq(3, ncol(tab)))
+                    extra[[k]] <- sprintf("n\u2081 = %d, n\u2082 = %d", n1, n2)
+                tab <- rbind(tab, extra)
+            }
             tab
         }, striped = TRUE, colnames = TRUE, rownames = FALSE,
            sanitize.text.function = identity)
@@ -1306,6 +1452,8 @@ ttestServer <- function(id) {
 
             validate(need(!is_constant(d$Score),
                           msg_no_variance("the outcome")))
+            validate(need(sum(d$Group == G1) > 0 && sum(d$Group == G2) > 0,
+                          msg_empty_group()))
             # Separately reachable: the groups differ but nobody inside a group
             # does, which makes t infinite rather than merely undefined.
             validate(need(!is_constant(s1) && !is_constant(s2),
@@ -1344,6 +1492,8 @@ ttestServer <- function(id) {
         output$anova_result <- renderUI({
             a  <- analysis_vars()
             validate(need(!is_constant(a$Score), msg_no_variance("the outcome")))
+            validate(need(sum(a$Group == G1) > 0 && sum(a$Group == G2) > 0,
+                          msg_empty_group()))
             # Same condition as the t-test above: this box claims F = t^2, so it
             # must not report F = Inf while the t-test declines to compute.
             validate(need(!is_constant(a$Score[a$Group == G1]) &&
@@ -1373,6 +1523,8 @@ ttestServer <- function(id) {
         output$dummy_result <- renderUI({
             d <- analysis_vars()
             validate(need(!is_constant(d$Score), msg_no_variance("the outcome")))
+            validate(need(sum(d$Group == G1) > 0 && sum(d$Group == G2) > 0,
+                          msg_empty_group()))
             # This box's punchline is that r-squared equals the ANOVA's eta-squared,
             # so it stands or falls with the ANOVA.
             validate(need(!is_constant(d$Score[d$Group == G1]) &&
