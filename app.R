@@ -28,7 +28,7 @@ library(DT)
 
 # App version, shown in the footer. Bump this whenever you deploy a change, so
 # what students see on screen tells you which build is live.
-APP_VERSION <- "1.1.0-dev"
+APP_VERSION <- "2.0.0"
 
 # Label for the row-number column, on screen and in the downloaded CSV.
 ID_LABEL <- "Participant"

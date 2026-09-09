@@ -489,5 +489,7 @@ call, so the next deploy will install it.
    panels. A fourth "scale data" page or a separate app remain possible; the
    generation functions are self-contained enough to move.
 
-2. **`APP_VERSION` is now `1.1.0-dev`** so the footer does not claim to be the
-   tagged v1.0.0 build. Settle the real number before deploying.
+2. **Released as 2.0.0**, merged to `main` and tagged `v2.0.0`. The major bump
+   reflects that measuring the t-test IV as a scale changes the panel's
+   semantics: group sizes become an outcome of the median split rather than
+   something the student sets.
