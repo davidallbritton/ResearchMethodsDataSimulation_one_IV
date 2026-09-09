@@ -319,6 +319,22 @@ scale_range <- function(st) {
     c(lo, hi)
 }
 
+# Tick marks at the actual response options, endpoints included.
+#
+# R chooses its own ticks otherwise, and for many ranges it never labels the
+# anchors: a 1-9 scale comes out labelled 0, 2, 4, 6, 8, 10 -- both endpoints
+# missing and two values that are not response options at all -- while a 1-4
+# scale gets 1.5 and 2.5. The axis then reads as if it stops short of the scale.
+scale_axis <- function(side, st) {
+    r  <- scale_range(st)
+    at <- seq(r[1], r[2])
+    if (length(at) > 12) {                      # long scales: thin the labels
+        step <- ceiling((r[2] - r[1]) / 10)
+        at <- unique(c(seq(r[1], r[2], by = step), r[2]))
+    }
+    axis(side, at = at)
+}
+
 # Which version of a variable the student will actually analyze -- that is,
 # whichever one lands in their CSV. The continuous score wins when it is there;
 # otherwise the scale mean stands in for it.
@@ -862,7 +878,11 @@ corrServer <- function(id) {
                  xlab = if (a$x_scaled) "X (scale mean)" else "X",
                  ylab = if (a$y_scaled) "Y (scale mean)" else "Y",
                  xlim = xlim, ylim = ylim,
+                 xaxt = if (a$x_scaled) "n" else "s",
+                 yaxt = if (a$y_scaled) "n" else "s",
                  pch = 19, col = "steelblue", main = r_txt)
+            if (a$x_scaled) scale_axis(1, sx())
+            if (a$y_scaled) scale_axis(2, sy())
 
             if (a$x_scaled || a$y_scaled) {
                 if (!flat) {
@@ -1398,9 +1418,11 @@ ttestServer <- function(id) {
             xpos <- c(1, 2)
             plot(NA, xlim = c(0.5, 2.5), ylim = ylim,
                  xaxt = "n", xlab = "",
+                 yaxt = if (d$dv_scaled) "n" else "s",
                  ylab = if (d$dv_scaled) "DV scale mean" else "Score (DV)",
                  main = paste("Sample d =", fmt(samp_d)))
             axis(1, at = xpos, labels = c(G1, G2))
+            if (d$dv_scaled) scale_axis(2, sdv())
 
             # jittered raw scores
             jit1 <- xpos[1] + runif(length(s1), -0.12, 0.12)
@@ -1873,9 +1895,11 @@ pairedServer <- function(id) {
             xpos <- c(1, 2)
             plot(NA, xlim = c(0.5, 2.5), ylim = ylim,
                  xaxt = "n", xlab = "",
+                 yaxt = if (d$dv_scaled) "n" else "s",
                  ylab = if (d$dv_scaled) "DV scale mean" else "Score (DV)",
                  main = paste("Sample d_z =", fmt(samp_dz)))
             axis(1, at = xpos, labels = c(C1, C2))
+            if (d$dv_scaled) scale_axis(2, sdv())
 
             # faint line linking each participant's two scores (the pairing)
             segments(xpos[1], s1, xpos[2], s2,

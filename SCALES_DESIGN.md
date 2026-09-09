@@ -314,9 +314,21 @@ Low/High are generation settings, so the axis follows the scale that currently
 is regenerated, since until then the displayed data still lives on the old
 range.
 
+Tick marks are drawn at the actual response options, endpoints included, by
+`scale_axis()`. The limits alone were not enough: R chooses its own ticks and
+for many ranges never labels the anchors — a 1-9 scale comes out labelled
+0, 2, 4, 6, 8, 10, missing both endpoints and inventing two values that are not
+response options, while a 1-4 scale gets 1.5 and 2.5. The axis then reads as if
+it stops short of the scale even though the limits were correct. Scales longer
+than 12 points thin their labels but stay anchored at both ends.
+
+The 4% padding R adds around the limits is kept deliberately, so a point
+sitting exactly on the ceiling is drawn whole rather than clipped in half by
+the frame.
+
 `renderPlot` draws on its own graphics device, so `par("usr")` afterwards reads
 nothing. `test_plot_axes.R` shadows `plot()` to record the limits the app
-actually requests.
+requests and `axis()` to record the tick positions.
 
 ### The R code box has to actually run
 
