@@ -28,7 +28,7 @@ library(DT)
 
 # App version, shown in the footer. Bump this whenever you deploy a change, so
 # what students see on screen tells you which build is live.
-APP_VERSION <- "2.0.0"
+APP_VERSION <- "2.0.1"
 
 # Label for the row-number column, on screen and in the downloaded CSV.
 ID_LABEL <- "Participant"
@@ -43,6 +43,11 @@ C2 <- "Condition 2"
 
 # ---- Shared formatting helpers ----------------------------------------------
 
+# Distributions are written N(mean, sigma = SD) rather than the conventional
+# N(mu, sigma^2), because every SD on screen is one the student typed and
+# rnorm() takes an SD too. Naming sigma keeps that honest: an unlabelled
+# N(0, 15.00) reads as a variance of 15, i.e. an SD near 3.9, which is not what
+# the t-test panel means.
 # One display format everywhere on screen: 2 decimals. Undefined statistics --
 # which degenerate settings really can produce -- print as an em dash rather
 # than "NA", so a table can still show what IS computable next to what is not.
@@ -842,20 +847,32 @@ corrServer <- function(id) {
         output$equations <- renderUI({
             p <- params()
             withMathJax(
+                # Both lines keep the generative "mean plus error" form on
+                # purpose: it is the story of how the sample was produced, and
+                # the parallel between the X and Y lines is the point. The two
+                # errors are independent draws, so they carry their own
+                # subscripts -- written as a bare e_i in both places they read
+                # as one quantity, which would make Y a deterministic function
+                # of X.
                 helpText("Each X score is the mean of X plus random error:"),
                 helpText(sprintf(
-                    "$$X_i = \\bar{X} + e_i = %s + e_i, \\quad e_i \\sim N(0, %s)$$",
+                    "$$X_i = \\bar{X} + e_{i,X} = %s + e_{i,X},
+                       \\quad e_{i,X} \\sim N(0,\\ \\sigma = %s)$$",
                     fmt(p$mean_x), fmt(p$sd_x)
                 )),
+                # "in proportion to" matters: without it the sentence describes
+                # a slope of 1, while the equation below it says b(X_i - Xbar).
                 helpText("Each Y score starts at the mean of Y, is adjusted up or
-                          down by how far that person's X is from average, then
-                          gets its own random error:"),
+                          down in proportion to how far that person's X is from
+                          average \u2014 the slope b sets how much \u2014 and
+                          then gets its own random error:"),
                 helpText(sprintf(
-                    "$$Y_i = \\bar{Y} + b(X_i - \\bar{X}) + e_i
-                           = %s + %s(X_i - %s) + e_i$$",
+                    "$$Y_i = \\bar{Y} + b(X_i - \\bar{X}) + e_{i,Y}
+                           = %s + %s(X_i - %s) + e_{i,Y}$$",
                     fmt(p$mean_y), fmt(p$slope), fmt(p$mean_x)
                 )),
-                helpText(sprintf("$$e_i \\sim N(0, %s)$$", fmt(p$sd_e))),
+                helpText(sprintf("$$e_{i,Y} \\sim N(0,\\ \\sigma = %s)$$",
+                                 fmt(p$sd_e))),
                 helpText("Multiplying out gives the usual regression equation:"),
                 helpText(sprintf(
                     "$$\\hat{Y}_i = b_0 + b_1 X_i = %s + %s X_i$$",
@@ -1323,13 +1340,20 @@ ttestServer <- function(id) {
         output$equations <- renderUI({
             p <- params()
             withMathJax(
-                helpText("Each score is its group's mean plus random error:"),
+                # The two groups' errors are independent draws and may not
+                # even share an SD, so they get their own subscripts -- the
+                # same convention the paired panel already uses. Writing both
+                # as a bare e_i invited reading them as one quantity.
+                helpText("Each score is its group's mean plus random error, and
+                          the two groups' errors are drawn independently:"),
                 helpText(sprintf(
-                    "$$Y_{i,1} = \\mu_1 + e_i = %s + e_i, \\quad e_i \\sim N(0, %s)$$",
+                    "$$Y_{i,1} = \\mu_1 + e_{i,1} = %s + e_{i,1},
+                       \\quad e_{i,1} \\sim N(0,\\ \\sigma = %s)$$",
                     fmt(p$mean1), fmt(p$sd1)
                 )),
                 helpText(sprintf(
-                    "$$Y_{i,2} = \\mu_2 + e_i = %s + e_i, \\quad e_i \\sim N(0, %s)$$",
+                    "$$Y_{i,2} = \\mu_2 + e_{i,2} = %s + e_{i,2},
+                       \\quad e_{i,2} \\sim N(0,\\ \\sigma = %s)$$",
                     fmt(p$mean2), fmt(p$sd2)
                 )),
                 helpText("The effect size is the mean difference in SD units:"),
