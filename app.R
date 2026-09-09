@@ -28,7 +28,7 @@ library(DT)
 
 # App version, shown in the footer. Bump this whenever you deploy a change, so
 # what students see on screen tells you which build is live.
-APP_VERSION <- "2.0.1"
+APP_VERSION <- "2.0.2"
 
 # Label for the row-number column, on screen and in the downloaded CSV.
 ID_LABEL <- "Participant"
@@ -1857,9 +1857,18 @@ pairedServer <- function(id) {
             sd_c1 <- abs(sd_c1); sd_c2 <- abs(sd_c2)
             rho   <- max(-0.99, min(0.99, rho))   # keep sd_D > 0 and generation valid
             sd_D  <- sqrt(sd_c1^2 + sd_c2^2 - 2 * rho * sd_c1 * sd_c2)
+            # Measurement 2 is written as a regression on measurement 1, the
+            # same shape as the correlation panel: start at the mean, adjust
+            # for where this person landed last time, add fresh error. b is
+            # the carry-over slope and sd_resid the spread of what is left.
+            # Together they reproduce exactly the intended rho and sigma_2.
+            # With no spread on measurement 1 there is nothing to carry over,
+            # so the slope collapses to 0 and measurement 2 keeps its full SD.
             list(
                 mean_c1 = mean_c1, sd_c1 = sd_c1, mean_c2 = mean_c2, sd_c2 = sd_c2,
                 rho = rho, sd_D = sd_D, diff = mean_c2 - mean_c1,
+                b = if (sd_c1 > 0) rho * sd_c2 / sd_c1 else 0,
+                sd_resid = if (sd_c1 > 0) sd_c2 * sqrt(1 - rho^2) else sd_c2,
                 dz = if (sd_D > 0) (mean_c2 - mean_c1) / sd_D else 0
             )
         }
@@ -1888,9 +1897,9 @@ pairedServer <- function(id) {
         # with fresh noise in proportion rho).
         sim_data <- reactive({
             p <- params()
-            z  <- rnorm(p$n)
-            s1 <- p$mean_c1 + p$sd_c1 * z
-            s2 <- p$mean_c2 + p$sd_c2 * (p$rho * z + sqrt(1 - p$rho^2) * rnorm(p$n))
+            s1 <- p$mean_c1 + rnorm(p$n, 0, p$sd_c1)
+            s2 <- p$mean_c2 + p$b * (s1 - p$mean_c1) +
+                  rnorm(p$n, 0, p$sd_resid)
             data.frame(Score1 = round(s1, 2), Score2 = round(s2, 2))
         })
 
@@ -1938,27 +1947,65 @@ pairedServer <- function(id) {
 
         output$equations <- renderUI({
             p <- params()
+
+            # Both constants are shown being worked out rather than arriving
+            # pre-computed: they are the only numbers on screen the student did
+            # not type. With no spread on measurement 1 the ratio is undefined,
+            # so that case is worded rather than formulated.
+            b_line <- if (p$sd_c1 > 0)
+                sprintf("$$b = \\rho\\,\\frac{\\sigma_2}{\\sigma_1}
+                          = %s \\times \\frac{%s}{%s} = %s$$",
+                        fmt(p$rho), fmt(p$sd_c2), fmt(p$sd_c1), fmt(p$b))
+            else
+                "$$b = 0 \\quad \\text{(everyone scores the same the first
+                   time, so there is nothing to carry over)}$$"
+
+            e_line <- if (p$sd_c1 > 0)
+                sprintf("$$e_{i,2} \\sim N\\!\\left(0,\\ \\sigma
+                          = \\sigma_2\\sqrt{1-\\rho^2}
+                          = %s\\sqrt{1-%s^2} = %s\\right)$$",
+                        fmt(p$sd_c2), fmt(p$rho), fmt(p$sd_resid))
+            else
+                sprintf("$$e_{i,2} \\sim N\\!\\left(0,\\ \\sigma
+                          = \\sigma_2 = %s\\right)$$", fmt(p$sd_c2))
             withMathJax(
-                helpText("Each participant is measured twice; the two scores are
-                          correlated:"),
+                # Measurement 2 is written as a regression on measurement 1,
+                # deliberately the same shape as the correlation panel: start
+                # at the mean, adjust for where this person already landed, add
+                # fresh error. An earlier draft introduced standard-normal
+                # z and w terms instead; it was exact but unreadable, and it
+                # broke the "mean plus error" pattern the other panels use.
+                helpText("Each participant's first score is the first mean plus
+                          random error:"),
                 helpText(sprintf(
-                    "$$\\text{Score}_{i,1} = \\mu_1 + e_{i,1}
-                       \\quad (\\mu_1 = %s,\\ \\sigma_1 = %s)$$",
+                    "$$\\text{Score}_{i,1} = \\mu_1 + e_{i,1} = %s + e_{i,1},
+                       \\quad e_{i,1} \\sim N(0,\\ \\sigma = %s)$$",
                     fmt(p$mean_c1), fmt(p$sd_c1)
                 )),
                 helpText(sprintf(
-                    "$$\\text{Score}_{i,2} = \\mu_2 + e_{i,2}
-                       \\quad (\\mu_2 = %s,\\ \\sigma_2 = %s),
-                       \\quad \\text{cor} = %s$$",
-                    fmt(p$mean_c2), fmt(p$sd_c2), fmt(p$rho)
+                    "Their second score starts at the second mean \u2014 higher
+                     than the first by the effect, \\(\\mu_2 - \\mu_1 =
+                     %s\\) \u2014 is adjusted up or down in proportion to how
+                     far that person was from average the first time, and then
+                     gets its own fresh error:",
+                    fmt(p$diff)
                 )),
-                helpText("The test uses each participant's difference score,
-                          \\(D_i = \\text{Score}_{i,2} - \\text{Score}_{i,1}\\):"),
                 helpText(sprintf(
-                    "$$d_z = \\frac{\\mu_2 - \\mu_1}{\\sigma_D}, \\quad
-                       \\sigma_D = \\sqrt{\\sigma_1^2 + \\sigma_2^2
-                                          - 2\\rho\\sigma_1\\sigma_2} = %s$$",
-                    fmt(p$sd_D)
+                    "$$\\text{Score}_{i,2} = \\mu_2
+                       + b\\left(\\text{Score}_{i,1} - \\mu_1\\right)
+                       + e_{i,2}
+                       = %s + %s\\left(\\text{Score}_{i,1} - %s\\right)
+                       + e_{i,2}$$",
+                    fmt(p$mean_c2), fmt(p$b), fmt(p$mean_c1)
+                )),
+                helpText(b_line),
+                helpText(e_line),
+                helpText(sprintf(
+                    "That carry-over is what makes the two measurements
+                     correlated: \\(b\\) comes straight from \\(\\rho =
+                     %s\\), and the second error is shrunk to match so Score 2
+                     still ends up with an SD of %s.",
+                    fmt(p$rho), fmt(p$sd_c2)
                 ))
             )
         })
@@ -1967,14 +2014,36 @@ pairedServer <- function(id) {
             p <- params()
             paste0(
                 "n <- ", p$n, "\n",
-                "# two correlated measurements per participant (r = ",
-                    fmt_code(p$rho), ")\n",
-                "z <- rnorm(n)\n",
-                "Score1 <- ", fmt_code(p$mean_c1), " + ", fmt_code(p$sd_c1),
-                    " * z\n",
-                "Score2 <- ", fmt_code(p$mean_c2), " + ", fmt_code(p$sd_c2),
-                    " * (", fmt_code(p$rho), " * z + sqrt(1 - ", fmt_code(p$rho),
-                    "^2) * rnorm(n))\n",
+                "Score1 <- ", fmt_code(p$mean_c1),
+                    " + rnorm(n, mean = 0, sd = ", fmt_code(p$sd_c1), ")\n",
+                "\n",
+                "# each person carries part of their first score into the second\n",
+                # Both derived constants are computed here rather than printed
+                # as finished numbers, so the block shows the same arithmetic
+                # the model section does.
+                if (p$sd_c1 > 0)
+                    paste0("b        <- ", fmt_code(p$rho), " * ",
+                           fmt_code(p$sd_c2), " / ", fmt_code(p$sd_c1),
+                           "   # rho * sd2 / sd1\n",
+                           "\n",
+                           "# sd_resid is how much fresh error Score2 needs so that its SD\n",
+                           "# comes out at the ", fmt_code(p$sd_c2),
+                           " you asked for. It is smaller than that,\n",
+                           "# because part of Score2 is built from Score1 \u2014 so Score2\n",
+                           "# already carries some of Score1's random error.\n",
+                           "sd_resid <- ", fmt_code(p$sd_c2),
+                           " * sqrt(1 - ", fmt_code(p$rho), "^2)",
+                           "   # sd2 * sqrt(1 - rho^2)\n")
+                else
+                    paste0("b        <- 0   # everyone ties on Score1, ",
+                           "so nothing carries over\n",
+                           "\n",
+                           "# nothing carries over from Score1, so none of its error comes\n",
+                           "# with it and Score2 needs its full SD as fresh error\n",
+                           "sd_resid <- ", fmt_code(p$sd_c2), "\n"),
+                "Score2   <- ", fmt_code(p$mean_c2),
+                    " + b * (Score1 - ", fmt_code(p$mean_c1), ")",
+                    " + rnorm(n, mean = 0, sd = sd_resid)\n",
                 "\n",
                 # Both measurements go through the SAME mapping, or the
                 # difference between them would be standardized away.

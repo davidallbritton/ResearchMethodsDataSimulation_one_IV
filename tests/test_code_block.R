@@ -91,8 +91,16 @@ e <- run_block(txt)
 ok("runs without error", TRUE)
 ok("emits BOTH measurements, not just the first",
    all(c("Score1_Scale_Mean", "Score2_Scale_Mean") %in% ls(e)))
-ok("the latent z that built the correlated scores is not clobbered",
-   length(e$z) == BIG)
+# The block used to build the correlated scores from a latent z, which the
+# scale snippet then clobbered by reusing the name. Measurement 2 is now a
+# regression on measurement 1, so there is no z -- but the scores it does
+# define must still survive the scale snippets that follow them.
+ok("Score1 and Score2 survive the scale snippets that follow",
+   length(e$Score1) == BIG && length(e$Score2) == BIG)
+ok("the block still reproduces the intended correlation",
+   abs(cor(e$Score1, e$Score2) - 0.6) < 0.05)
+ok("...and the intended condition means",
+   abs(mean(e$Score2) - mean(e$Score1) - 10) < 1)
 ok("condition 2 still scores higher after scaling",
    mean(e$Score2_Scale_Mean) > mean(e$Score1_Scale_Mean))
 ok("the pairing survives: the two scale means correlate",
