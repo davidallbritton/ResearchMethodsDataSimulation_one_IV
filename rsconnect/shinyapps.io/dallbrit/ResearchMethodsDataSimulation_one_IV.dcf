@@ -5,7 +5,7 @@ account: dallbrit
 server: shinyapps.io
 hostUrl: https://api.shinyapps.io/v1
 appId: 17630175
-bundleId: 12531185
+bundleId: 12531577
 url: https://dallbrit.shinyapps.io/ResearchMethodsDataSimulation_one_IV/
 version: 1
 asMultiple: FALSE
