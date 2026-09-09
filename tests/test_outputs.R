@@ -8,8 +8,7 @@
 source(if (file.exists("tests/helper.R")) "tests/helper.R" else "helper.R")
 load_app()
 
-png(tempfile())                    # sink for renderPlot
-on.exit(invisible(dev.off()), add = TRUE)
+png(tempfile())                    # sink for renderPlot; closed at the end
 set.seed(202)                      # pin the draws so runs are comparable
 
 # Force each named output and report any that raise. A validation message is
@@ -74,3 +73,5 @@ for (cfg in list(list(lab = "no scales",           dv = FALSE, cols = NULL),
         dv_use = cfg$dv, dv_items = 6, dv_min = 1, dv_max = 7, dv_rel = .8,
         dv_cols = cfg$cols, dv_target = 4), PR_OUT)
 }
+
+invisible(dev.off())

@@ -308,6 +308,17 @@ caution_note <- function(v, k_min, k_max) {
     NULL
 }
 
+# A variable measured as a scale is always plotted on its FULL response range,
+# so a ceiling or floor effect shows as a pile-up against the edge of the frame
+# instead of being hidden by axes that shrink to fit whatever was drawn. It also
+# keeps the frame still across redraws, so regenerating the scale shows the
+# points moving inside a fixed range.
+scale_range <- function(st) {
+    lo <- st$kmin; hi <- st$kmax
+    if (hi <= lo) hi <- lo + 1
+    c(lo, hi)
+}
+
 # Which version of a variable the student will actually analyze -- that is,
 # whichever one lands in their CSV. The continuous score wins when it is there;
 # otherwise the scale mean stands in for it.
@@ -335,10 +346,13 @@ scale_columns <- function(st, base, items, scale_mean, raw) {
     out
 }
 
-# Mark a descriptives column as the one the CSV actually contains.
-csv_flag <- function(on) if (on) " \u2713 in your CSV" else ""
+# Tick the descriptives column that everything else on the page is built from:
+# the version of the data the result boxes and the plot use, and the one the CSV
+# will contain. The tick alone carries that; spelling it out in the header made
+# the column read as being only about the download.
+csv_flag <- function(on) if (on) " \u2713" else ""
 
-# Wrap a descriptives cell so the CSV-bound column stands out.
+# Wrap a descriptives cell so that same column stands out.
 csv_cell <- function(v, on) {
     if (on) paste0("<span class='csv-col'>", v, "</span>") else v
 }
@@ -795,11 +809,18 @@ corrServer <- function(id) {
             flat <- is_constant(a$X) || is_constant(a$Y)
             r_txt <- paste("Sample r =", fmt(suppressWarnings(cor(a$X, a$Y))))
 
+            # Each axis is framed by its own variable: a scale gets its full
+            # response range, a continuous variable keeps the model-based frame.
+            xlim <- if (a$x_scaled) scale_range(sx()) else lim$x
+            ylim <- if (a$y_scaled) scale_range(sy()) else lim$y
+
+            plot(a$X, a$Y,
+                 xlab = if (a$x_scaled) "X (scale mean)" else "X",
+                 ylab = if (a$y_scaled) "Y (scale mean)" else "Y",
+                 xlim = xlim, ylim = ylim,
+                 pch = 19, col = "steelblue", main = r_txt)
+
             if (a$x_scaled || a$y_scaled) {
-                plot(a$X, a$Y,
-                     xlab = if (a$x_scaled) "X (scale mean)" else "X",
-                     ylab = if (a$y_scaled) "Y (scale mean)" else "Y",
-                     pch = 19, col = "steelblue", main = r_txt)
                 if (!flat) {
                     abline(lm(a$Y ~ a$X), col = "firebrick", lwd = 2)
                     legend("topleft", bty = "n",
@@ -807,10 +828,6 @@ corrServer <- function(id) {
                            col = "firebrick", lwd = 2)
                 }
             } else {
-                plot(a$X, a$Y,
-                     xlab = "X", ylab = "Y",
-                     xlim = lim$x, ylim = lim$y,
-                     pch = 19, col = "steelblue", main = r_txt)
                 # the line the data actually came from
                 abline(a = p$b0, b = p$slope, col = "grey40", lwd = 2, lty = 2)
                 if (!flat) {
@@ -1033,8 +1050,6 @@ ttestServer <- function(id) {
 
         siv <- reactive(scale_settings(input, "iv", spec_iv()))
         sdv <- reactive(scale_settings(input, "dv", spec_dv()))
-
-        observe_scale_range(input, session, "dv")
 
         observe_scale_range(input, session, "iv")
         observe_scale_range(input, session, "dv")
@@ -1319,8 +1334,9 @@ ttestServer <- function(id) {
                 (mean(s2) - mean(s1)) / samp_sd_pooled else 0
 
             # On a scale metric the population-mean lines are in the wrong
-            # units, so the frame comes from the data instead of the model.
-            ylim <- if (d$dv_scaled) range(d$Score) + c(-0.4, 0.4) else y_limits()
+            # units, so the frame is the scale's own full response range --
+            # which is also what makes a ceiling or floor effect visible.
+            ylim <- if (d$dv_scaled) scale_range(sdv()) else y_limits()
 
             xpos <- c(1, 2)
             plot(NA, xlim = c(0.5, 2.5), ylim = ylim,
@@ -1506,6 +1522,8 @@ pairedServer <- function(id) {
                                  scale_spec_of(input, "dv"), ignoreNULL = FALSE)
 
         sdv <- reactive(scale_settings(input, "dv", spec_dv()))
+
+        observe_scale_range(input, session, "dv")
 
         # Two correlated measurements per participant (same construction as the
         # correlation module: measurement 2 is measurement 1's z-score, blended
@@ -1780,9 +1798,9 @@ pairedServer <- function(id) {
             samp_dz <- if (sd(D) > 0) mean(D) / sd(D) else 0
 
             # On a scale metric the population-mean lines are in the wrong
-            # units, so the frame comes from the data instead of the model.
-            ylim <- if (d$dv_scaled) range(c(s1, s2)) + c(-0.4, 0.4)
-                    else y_limits()
+            # units, so the frame is the scale's own full response range --
+            # which is also what makes a ceiling or floor effect visible.
+            ylim <- if (d$dv_scaled) scale_range(sdv()) else y_limits()
 
             xpos <- c(1, 2)
             plot(NA, xlim = c(0.5, 2.5), ylim = ylim,

@@ -56,8 +56,10 @@ Two defects in that code, not to be ported as-is:
   - `This sample` — the continuous variable
   - `This sample as scales` — the scale version
 - Both are shown together deliberately, for pedagogical contrast.
-- **One of them is highlighted** to indicate which corresponds to the sample
-  data that will actually be downloaded as CSV.
+- **One of them is highlighted and ticked** to indicate which version everything
+  else on the page is built from: the result boxes, the plot, and the CSV. The
+  tick alone carries this — an earlier "✓ in your CSV" header made the column
+  read as being only about the download.
 
 ### Scale definition inputs
 - Ticking the scales box reveals **additional inputs defining the scale**
@@ -137,8 +139,8 @@ than a score.
 ### Descriptives layout
 Implemented as an extra **column** ("This sample as scales") rather than a row
 — the rows are statistic names, so a column is the parallel structure. The
-column whose numbers match the CSV is highlighted and flagged with a check
-mark.
+column whose numbers drive the result boxes, the plot and the CSV is
+highlighted and flagged with a check mark.
 
 ### Redrawing scales without redrawing the sample
 
@@ -265,6 +267,7 @@ and both forms work from the project root or from inside `tests/`.
 | `test_perbutton.R` | per-variable buttons are independent; IV column label |
 | `test_slider_wiring.R` | every slider reaches its generator |
 | `test_guard.R` | degenerate settings explain themselves instead of erroring |
+| `test_plot_axes.R` | scale variables are plotted on their full response range |
 
 `helper.R` finds `app.R` by walking up from the working directory, loads it
 without calling `shinyApp()`, and provides `ok()` plus the tally the runner
@@ -275,6 +278,12 @@ Two notes for anyone adding tests:
 - **Pin the seed.** `test_guard.R` and `test_outputs.R` originally had none, and
   a result flipped purely because running from a different directory changed the
   RNG state.
+- **Do not use `on.exit()` at the top level of a test file.** Sourced by the
+  runner it fires as soon as that one expression finishes, so cleanup runs
+  before any test does; run standalone it never fires at all. `test_plot_axes.R`
+  shadows `plot()` and tore the shadow down instantly this way, passing
+  standalone and failing 12 assertions under the runner. Clean up explicitly at
+  the bottom of the file instead.
 - **Endpoint targets are likely degenerate, not certainly so.** With four items
   at target 7 about 99.6% of people max out, so a sample of 30 keeps some
   variance roughly a tenth of the time. Assert on population SD = 0 when a test
@@ -286,6 +295,27 @@ module passed, so three of the four sliders silently did nothing. The engine was
 tested, the wiring was not. That file also counts the generator call sites and
 asserts every one passes a target, to catch the same class of mistake if a
 fourth panel is added.
+
+### Plot axes follow the response range
+
+Whenever a variable is displayed as a scale, its axis spans the scale's full
+`kmin`-`kmax` range instead of shrinking to fit the data. A ceiling effect then
+reads as a pile-up against the top of the frame rather than being hidden by
+axes that quietly rescale, and redrawing the scale shows the *points* moving
+inside a fixed frame.
+
+Each axis is decided by its own variable, so a scaled Y against a continuous X
+keeps the model-based frame on the x axis and the response range on the y.
+`scale_range()` also repairs a crossed Low/High pair.
+
+Low/High are generation settings, so the axis follows the scale that currently
+*exists*: changing the response range does not move the frame until the scale
+is regenerated, since until then the displayed data still lives on the old
+range.
+
+`renderPlot` draws on its own graphics device, so `par("usr")` afterwards reads
+nothing. `test_plot_axes.R` shadows `plot()` to record the limits the app
+actually requests.
 
 ## Open questions
 

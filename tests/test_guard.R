@@ -13,8 +13,7 @@
 source(if (file.exists("tests/helper.R")) "tests/helper.R" else "helper.R")
 load_app()
 
-png(tempfile())
-on.exit(invisible(dev.off()), add = TRUE)
+png(tempfile())                    # closed at the end of the file
 set.seed(404)          # these scenarios are random; pin them so runs compare
 
 # "ok" = rendered normally, "guarded" = validate() explained itself,
@@ -126,3 +125,5 @@ testServer(ttestServer, args = list(id = "t"), {
        all(vapply(c("ttest_result", "anova_result", "dummy_result"),
                   function(o) classify(output[[o]]) == "guarded", logical(1))))
 })
+
+invisible(dev.off())
