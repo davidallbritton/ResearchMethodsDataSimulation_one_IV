@@ -22,6 +22,7 @@
 #
 
 library(shiny)
+library(DT)
 
 # ---- Shared constants -------------------------------------------------------
 
@@ -483,6 +484,48 @@ iv_code_snippet <- function(st) {
     )
 }
 
+# ---- Sample data table ------------------------------------------------------
+#
+# DT rather than renderTable, so students can sort by any column: sorting by a
+# scale mean is the quickest way to see where a median split falls, and doing
+# it themselves beats being shown it pre-sorted.
+#
+# The row order passed in is preserved (order = list() disables DT's own
+# initial sort), so a panel can still choose a meaningful default and let the
+# student re-sort from there.
+render_data_table <- function(df, group_col = NULL) {
+    is_num <- vapply(df, is.numeric, logical(1))
+    # Only columns that actually carry fractions get decimals; Likert items and
+    # participant numbers stay whole, which renderTable could not manage.
+    dec <- names(df)[vapply(df, function(v)
+        is.numeric(v) && any(abs(v - round(v)) > 1e-8, na.rm = TRUE),
+        logical(1))]
+
+    col_defs <- list()
+    if (any(is_num))
+        col_defs <- list(list(className = "dt-right",
+                              targets = as.integer(which(is_num) - 1L)))
+
+    dt <- DT::datatable(
+        df, rownames = FALSE, selection = "none",
+        class = "compact hover",
+        options = list(paging = FALSE, scrollY = "380px",
+                       scrollCollapse = TRUE, dom = "t",
+                       order = list(), columnDefs = col_defs))
+    if (length(dec)) dt <- DT::formatRound(dt, dec, 2)
+
+    # Tint whole rows by group. Sorted by the scale mean this shows the split
+    # as two bands with an obvious boundary; sorted any other way it shows the
+    # groups interleaving, which is informative in its own right. Only applied
+    # when the student actually has the group column, so it never leaks a
+    # grouping the instructor chose to withhold.
+    if (!is.null(group_col) && group_col %in% names(df))
+        dt <- DT::formatStyle(dt, group_col, target = "row",
+                              backgroundColor = DT::styleEqual(
+                                  c(G1, G2), c("#eaf1f8", "#fdf3e0")))
+    dt
+}
+
 # ---- Shared styling ---------------------------------------------------------
 
 app_css <- HTML("
@@ -503,11 +546,16 @@ app_css <- HTML("
                  align-items: flex-start; }
     .stats-col { flex: 0 0 auto; }
     .plot-col  { flex: 1 1 340px; min-width: 300px; }
-    .stats-col table td, .stats-col table th { white-space: nowrap; }
+    /* Scoped to the descriptives table only: the sample data table is a DT
+       widget with its own alignment, and these rules would fight it. */
+    .desc-table table td, .desc-table table th { white-space: nowrap; }
     /* First column is the statistic's name; every value column is numeric.
        Done in CSS because the column count varies with the scale settings. */
-    .stats-col table td:not(:first-child),
-    .stats-col table th:not(:first-child) { text-align: right; }
+    .desc-table table td:not(:first-child),
+    .desc-table table th:not(:first-child) { text-align: right; }
+    /* Keep the data table compact and quiet. */
+    .stats-col .dataTables_wrapper { font-size: 92%; margin-top: 2px; }
+    .stats-col table.dataTable thead th { border-bottom: 1px solid #b8c4d0; }
     .stats-col h4 { margin-top: 14px; }
     .data-head { display: flex; align-items: baseline; gap: 10px; }
     .data-head h4 { margin-bottom: 6px; }
@@ -656,17 +704,14 @@ corrUI <- function(id) {
                     div(
                         class = "stats-col",
                         tags$h4("Descriptive Statistics"),
-                        tableOutput(ns("sample_stats")),
+                        div(class = "desc-table", tableOutput(ns("sample_stats"))),
                         div(
                             class = "data-head",
                             tags$h4("Sample Data"),
                             downloadButton(ns("download_csv"), "CSV",
                                            class = "btn-xs")
                         ),
-                        div(
-                            style = "max-height: 420px; overflow-y: auto;",
-                            tableOutput(ns("data_table"))
-                        )
+                        DT::DTOutput(ns("data_table"))
                     ),
                     div(
                         class = "plot-col",
@@ -857,9 +902,7 @@ corrServer <- function(id) {
             out
         })
 
-        output$data_table <- renderTable({
-            labelled_data()
-        }, digits = 2, striped = TRUE)
+        output$data_table <- DT::renderDT(render_data_table(labelled_data()))
 
         output$download_csv <- downloadHandler(
             filename = function() {
@@ -1133,7 +1176,7 @@ ttestUI <- function(id) {
                     div(
                         class = "stats-col",
                         tags$h4("Descriptive Statistics"),
-                        tableOutput(ns("sample_stats")),
+                        div(class = "desc-table", tableOutput(ns("sample_stats"))),
                         div(
                             class = "data-head",
                             tags$h4("Sample Data"),
@@ -1141,10 +1184,7 @@ ttestUI <- function(id) {
                                            class = "btn-xs")
                         ),
                         uiOutput(ns("sort_note")),
-                        div(
-                            style = "max-height: 420px; overflow-y: auto;",
-                            tableOutput(ns("data_table"))
-                        )
+                        DT::DTOutput(ns("data_table"))
                     ),
                     div(
                         class = "plot-col",
@@ -1383,9 +1423,10 @@ ttestServer <- function(id) {
                            participant order."))
         })
 
-        output$data_table <- renderTable({
-            display_data()
-        }, digits = 2, striped = TRUE)
+        # Rows are tinted by group, so the split reads as two bands and the
+        # boundary is visible wherever the student has scrolled to.
+        output$data_table <- DT::renderDT(
+            render_data_table(display_data(), group_col = "Group"))
 
         output$download_csv <- downloadHandler(
             filename = function() {
@@ -1402,32 +1443,60 @@ ttestServer <- function(id) {
             ns <- session$ns
             d  <- sim_data()
             n1 <- sum(d$Group == G1); n2 <- sum(d$Group == G2)
+            shown <- "raw" %in% siv()$cols
 
             if (force_equal()) {
-                moved <- scaled_iv()$moved
+                # Say what forcing did to the GROUPS, not just how many scores
+                # were touched. The table cannot show this: sorted by the scale
+                # mean the participant numbers are shuffled and there is no
+                # running count, so the change in group sizes has to be stated.
+                before <- median_split_groups(rowMeans(iv_items_raw()))
+                b1 <- sum(before == G1); b2 <- sum(before == G2)
+                moved <- sum(before != d$Group)
+                nudged <- scaled_iv()$moved
                 return(div(
                     class = "split-note",
                     HTML(sprintf(
-                        "Group sizes forced to %d and %d by nudging <b>%d</b>
-                         scale score%s up one point on a single item. Real data
-                         does not oblige like this \u2014 the nudge is here so
-                         you can see what insisting on equal groups costs.",
-                        n1, n2, moved, if (moved == 1) "" else "s")),
+                        "<b>%d participant%s moved from %s to %s.</b> Group
+                         sizes went from %d and %d to %d and %d. To do that,
+                         %d scale score%s %s nudged up one point on a single
+                         item. You can't do that with real data, and we are
+                         only doing it here so that you can have equal group
+                         sizes if your assignment requires them.",
+                        moved, if (moved == 1) "" else "s", G1, G2,
+                        b1, b2, n1, n2,
+                        nudged, if (nudged == 1) "" else "s",
+                        if (nudged == 1) "was" else "were")),
                     actionLink(ns("iv_unforce"), "Undo, show the real split")))
             }
             if (n1 == n2) return(NULL)
+
+            m <- scaled_iv()$mean
+            tied <- sum(m == median(m))
             div(
                 class = "split-warn",
                 span(class = "warn-head",
                      sprintf("\u26a0 Unequal groups: %d vs %d", n1, n2)),
-                HTML("Several participants share the same scale mean, and a
-                      median split must put all of them on the same side. This
-                      is what splitting a real measured variable does \u2014 the
-                      scale is too coarse to divide people evenly, and which
-                      side a tied participant lands on is decided by the
-                      cut-off rather than by anything about that person.
-                      <b>Sort the data table by the scale mean to see exactly
-                      where the split falls.</b>"),
+                HTML(paste0(
+                    sprintf("<b>%d participants share the same scale mean at
+                             the cut-off</b>, and a median split must put all
+                             of them on the same side \u2014 which is why the
+                             groups came out %d and %d rather than %d each. ",
+                            tied, n1, n2, (n1 + n2) %/% 2),
+                    "This is what splitting a real measured variable does: the
+                     scale is too coarse to divide people evenly, and which
+                     side a tied participant lands on is decided by the
+                     cut-off rather than by anything about that person. ",
+                    if (shown)
+                        "<b>The data table below is sorted by the scale mean
+                         and shaded by group, so the boundary is the point
+                         where the shading changes.</b>"
+                    else
+                        "<b>Tick \u201cGroup membership\u201d in the IV\u2019s
+                         <i>Include in the CSV</i> list \u2014 the data table
+                         below is sorted by the scale mean and will then shade
+                         the two groups, so you can see exactly where the
+                         boundary falls.</b>")),
                 br(),
                 actionButton(ns("iv_force"),
                              "Force equal group sizes (not how real data works)",
@@ -1732,7 +1801,7 @@ pairedUI <- function(id) {
                     div(
                         class = "stats-col",
                         tags$h4("Descriptive Statistics"),
-                        tableOutput(ns("sample_stats")),
+                        div(class = "desc-table", tableOutput(ns("sample_stats"))),
                         div(
                             class = "data-head",
                             tags$h4("Sample Data"),
@@ -1740,10 +1809,7 @@ pairedUI <- function(id) {
                                            class = "btn-xs")
                         ),
                         helpText(sprintf("Score1 = %s, Score2 = %s.", C1, C2)),
-                        div(
-                            style = "max-height: 420px; overflow-y: auto;",
-                            tableOutput(ns("data_table"))
-                        )
+                        DT::DTOutput(ns("data_table"))
                     ),
                     div(
                         class = "plot-col",
@@ -1918,9 +1984,7 @@ pairedServer <- function(id) {
             out
         })
 
-        output$data_table <- renderTable({
-            labelled_data()
-        }, digits = 2, striped = TRUE)
+        output$data_table <- DT::renderDT(render_data_table(labelled_data()))
 
         output$download_csv <- downloadHandler(
             filename = function() {

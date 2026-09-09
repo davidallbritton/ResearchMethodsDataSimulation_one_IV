@@ -325,6 +325,10 @@ and both forms work from the project root or from inside `tests/`.
 | `test_median_split.R` | the measured IV splits honestly; the force button nudges minimally |
 | `test_module_wiring.R` | every UI slot is rendered by its own module's server |
 
+`test_module_wiring.R` keeps a list of output-slot constructors. Introducing a
+new kind of output means adding it there, or its slot will look orphaned — that
+is what happened when the data table became `DT::DTOutput`.
+
 `helper.R` finds `app.R` by walking up from the working directory, loads it
 without calling `shinyApp()`, and provides `ok()` plus the tally the runner
 reads back.
@@ -341,6 +345,9 @@ Two notes for anyone adding tests:
   UI slot sat in `ttestUI`. None errored — the misplaced code was simply dead,
   and every behavioural test still passed. `test_module_wiring.R` now checks
   this structurally.
+- **Some failures are invisible headlessly.** The `server = FALSE` bug broke
+  the table in every browser while all 257 headless assertions passed. When a
+  change touches client-side behaviour, run `tests/browser_check.R`.
 - **Do not use `on.exit()` at the top level of a test file.** Sourced by the
   runner it fires as soon as that one expression finishes, so cleanup runs
   before any test does; run standalone it never fires at all. `test_plot_axes.R`
@@ -417,6 +424,64 @@ Also: item draws use `length(<var>_z)` rather than `n`, because a t-test's
 recycled silently.
 
 `base::findInterval` is base R, so the block needs no library call.
+
+### The sample data table is a DT widget
+
+`renderTable` is static HTML with no sorting hook, so the sample data table is
+`DT::datatable`. Students can sort by any column — sorting by a scale mean is
+the quickest way to see where a median split falls, and doing it themselves
+beats being shown it pre-sorted.
+
+- `order = list()` disables DT's own initial sort, so the server-side order
+  survives: the t-test panel still opens sorted by the IV scale mean.
+- `paging = FALSE` with `scrollY`, and `dom = "t"`, keep the all-rows-scrolling
+  feel of the old table with no search box or pagination controls.
+- Only columns that actually carry fractions are rounded to two decimals.
+  `renderTable(digits = 2)` printed Likert items as `4.00`; they now show as
+  `4`, while scale means and raw scores keep their decimals.
+- Sorting is client-side and does not change the CSV, which stays in
+  participant order.
+
+**Showing the split, rather than preserving the view.** An earlier attempt kept
+the student's scroll position across the *force equal groups* click, using
+`DT::dataTableProxy()` + `replaceData()` so the widget was never rebuilt. It was
+reverted. Two reasons:
+
+- It did not work in practice. A measurement said the scroll body's `scrollTop`
+  was unchanged, but the view still jumped in real use — most likely because
+  the tall red warning is replaced by the short blue note, so everything below
+  reflows. The measurement was reading the wrong thing.
+- Even working, it would not have taught anything. Sorted by the scale mean the
+  participant numbers are shuffled and there is no running count, so a student
+  watching a few Group labels flip still could not tell that 23/17 became
+  20/20.
+
+What replaced it:
+
+- **The note states the consequence.** After forcing: *"3 participants moved
+  from Group 1 to Group 2. Group sizes went from 23 and 17 to 20 and 20."* The
+  nudge count is still owned up to, but it is the mechanism, not the point, and
+  it is framed as a practical option — *"we are only doing it here so that you
+  can have equal group sizes if your assignment requires them"* — rather than
+  as a lesson in what the nudge costs.
+- **The warning quantifies the cause.** *"5 participants share the same scale
+  mean at the cut-off … which is why the groups came out 23 and 17 rather than
+  20 each."*
+- **Rows are tinted by group**, so the boundary is wherever the shading
+  changes — visible at any scroll position, and robust to the student
+  re-sorting by another column. Verified in a real browser: exactly two row
+  colours and exactly one colour change down the table.
+
+The tint is applied only when the student actually has the Group column, so it
+never leaks a grouping the instructor chose to withhold.
+
+**The CSS needed scoping.** `.stats-col table td:not(:first-child)` was written
+to right-align the descriptives, but it matched any table in that column and
+would have fought DT's own alignment. Those rules now target `.desc-table`,
+a wrapper added around the descriptives table only.
+
+`library(DT)` is a new dependency; rsconnect picks it up from the `library()`
+call, so the next deploy will install it.
 
 ## Open questions
 

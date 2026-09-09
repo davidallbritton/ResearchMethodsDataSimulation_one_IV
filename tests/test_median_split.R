@@ -157,12 +157,99 @@ testServer(ttestServer, args = list(id = "t"), {
         d <- sim_data()
         if (sum(d$Group == G1) != sum(d$Group == G2)) break
     }
-    h <- paste(as.character(output$split_note), collapse = "")
+    # Multi-line R strings keep their newlines and indentation, which the
+    # browser collapses but grepl() does not, so squash whitespace first.
+    squish <- function(x) gsub("\\s+", " ", paste(as.character(x), collapse = ""))
+    h <- squish(output$split_note)
     ok("uses the loud warning style", grepl("split-warn", h, fixed = TRUE))
     ok("leads with a warning symbol and the sizes",
        grepl("\u26a0", h) && grepl("Unequal groups", h, fixed = TRUE))
     ok("the force button is styled as a danger action",
        grepl("btn-danger", h, fixed = TRUE))
-    ok("points students at the sorted table",
-       grepl("Sort the data table", h, fixed = TRUE))
+    # The boundary is invisible without the Group column, which is not shown
+    # by default, so the hint has to say to turn it on first.
+    ok("with Group hidden, tells students to tick Group membership",
+       grepl("Group membership", h, fixed = TRUE))
+    ok("...and points them at the already-sorted table",
+       grepl("sorted by the scale mean", h, fixed = TRUE))
+    ok("...and does not claim they must sort it themselves",
+       !grepl("Sort the data table", h, fixed = TRUE))
+
+    session$setInputs(iv_cols = c("items", "mean", "raw"))
+    h2 <- squish(output$split_note)
+    ok("with Group shown, drops the tick-the-box instruction",
+       !grepl("Tick", h2, fixed = TRUE))
+    ok("...and still points at the sorted table",
+       grepl("sorted by the scale mean", h2, fixed = TRUE))
+})
+
+cat("\nThe data table is a sortable DT widget\n")
+testServer(ttestServer, args = list(id = "t"), {
+    do.call(session$setInputs, IV(iv_cols = c("items", "mean", "raw")))
+    w <- output$data_table
+    ok("renders a DT widget", inherits(w, "json") || is.character(w) ||
+                              !is.null(w))
+    j <- paste(as.character(w), collapse = "")
+    ok("no initial DT sort, so the server order is what shows",
+       grepl('"order":\\[\\]', j) || grepl('"order": *\\[\\]', j))
+    ok("paging is off so every participant is visible",
+       grepl('"paging":false', j, fixed = TRUE))
+    ok("scale means keep two decimals",
+       grepl("Group_Scale_Mean", j, fixed = TRUE))
+    ok("whole-number columns are not padded with decimals", {
+       d <- display_data()
+       items <- grep("_Scale_q", names(d), value = TRUE)
+       length(items) > 0 && all(d[[items[1]]] == round(d[[items[1]]])) })
+})
+
+cat("\nForcing reports what it did to the GROUPS, not just the scores\n")
+# The table cannot show this: sorted by the scale mean the participant numbers
+# are shuffled and there is no running count, so the change in group sizes has
+# to be stated in words.
+testServer(ttestServer, args = list(id = "t"), {
+    do.call(session$setInputs, IV(iv_cols = c("items", "mean", "raw"), n = 40))
+    for (r in 1:30) {
+        session$setInputs(generate = r)
+        d <- sim_data()
+        if (sum(d$Group == G1) != sum(d$Group == G2)) break
+    }
+    b1 <- sum(d$Group == G1); b2 <- sum(d$Group == G2)
+    sq <- function(x) gsub("\\s+", " ", paste(as.character(x), collapse = ""))
+
+    warn <- sq(output$split_note)
+    ok("the warning says how many people are tied at the cut-off",
+       grepl("share the same scale mean at the cut-off", warn, fixed = TRUE))
+    ok("...and contrasts the actual sizes with an even split",
+       grepl(sprintf("%d and %d rather than %d each", b1, b2, (b1 + b2) %/% 2),
+             warn, fixed = TRUE))
+
+    session$setInputs(iv_force = 1)
+    d2 <- sim_data()
+    note <- sq(output$split_note)
+    moved <- sum(median_split_groups(rowMeans(iv_items_raw())) != d2$Group)
+    ok("the note counts the participants who changed group",
+       grepl(sprintf("%d participant", moved), note, fixed = TRUE))
+    ok("...and gives the sizes before and after",
+       grepl(sprintf("from %d and %d to %d and %d", b1, b2,
+                     sum(d2$Group == G1), sum(d2$Group == G2)),
+             note, fixed = TRUE))
+    ok("...and still owns up to the nudge",
+       grepl("nudged up one point", note, fixed = TRUE))
+    ok("groups really are equal now",
+       sum(d2$Group == G1) == sum(d2$Group == G2))
+})
+
+cat("\nRows are shaded by group so the boundary is visible\n")
+testServer(ttestServer, args = list(id = "t"), {
+    do.call(session$setInputs, IV(iv_cols = c("items", "mean", "raw")))
+    j <- paste(as.character(output$data_table), collapse = "")
+    # formatStyle emits a rowCallback carrying the tint colours; assert on the
+    # colours themselves rather than on DT's generated property names.
+    ok("rows carry a group tint", grepl("rowCallback", j, fixed = TRUE) &&
+                                  grepl("eaf1f8", j, fixed = TRUE) &&
+                                  grepl("fdf3e0", j, fixed = TRUE))
+    session$setInputs(iv_cols = c("items", "mean"))
+    j2 <- paste(as.character(output$data_table), collapse = "")
+    ok("no shading when the instructor withheld group membership",
+       !grepl("eaf1f8", j2, fixed = TRUE))
 })
