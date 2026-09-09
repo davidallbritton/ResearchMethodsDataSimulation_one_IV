@@ -268,6 +268,7 @@ and both forms work from the project root or from inside `tests/`.
 | `test_slider_wiring.R` | every slider reaches its generator |
 | `test_guard.R` | degenerate settings explain themselves instead of erroring |
 | `test_plot_axes.R` | scale variables are plotted on their full response range |
+| `test_code_block.R` | the R code box runs and reproduces the reported analysis |
 
 `helper.R` finds `app.R` by walking up from the working directory, loads it
 without calling `shinyApp()`, and provides `ok()` plus the tally the runner
@@ -316,6 +317,32 @@ range.
 `renderPlot` draws on its own graphics device, so `par("usr")` afterwards reads
 nothing. `test_plot_axes.R` shadows `plot()` to record the limits the app
 actually requests.
+
+### The R code box has to actually run
+
+It claims to reproduce what the app just did, so it is evaluated in the tests
+rather than eyeballed. It had been wrong four ways at once:
+
+- **t-test: `object 'Score' not found`.** The block created `group1` and
+  `group2` and never combined them, so the snippet referenced a variable that
+  did not exist. It now emits `Score <- c(group1, group2)` and a matching
+  `Group` factor.
+- **The Typical response shift was missing.** The snippet had no `mu`, so an
+  off-centre scale came out centred — the code silently did something different
+  from the app. `mu` is now computed and printed.
+- **Paired emitted only one measurement**, and reused the name `z`, clobbering
+  the latent that builds the correlated scores. Names are now prefixed per
+  variable (`Score1_z`, `Score2_sigma`, ...) and both measurements are emitted
+  through the same mapping.
+- **The analysis lines tested the wrong variable.** The block ended with
+  `t.test(group2, group1)` even when the results box had reported a test of the
+  scale means. The final lines now follow whichever version is in the CSV.
+
+Also: item draws use `length(<var>_z)` rather than `n`, because a t-test's
+`Score` is `2n` rows while its `n` is per group — `rnorm(n, ...)` would have
+recycled silently.
+
+`base::findInterval` is base R, so the block needs no library call.
 
 ## Open questions
 

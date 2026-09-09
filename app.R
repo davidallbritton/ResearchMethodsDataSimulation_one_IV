@@ -358,20 +358,58 @@ csv_cell <- function(v, on) {
 }
 
 # Reproducible R for one variable's scale, with this panel's actual numbers.
-scale_code_snippet <- function(st, var, ref_mean, ref_sd) {
+# Reproducible R for one variable's scale, with this panel's actual numbers.
+#
+# Every name is prefixed with the variable, so two scales in one block cannot
+# clobber each other -- and so the paired panel's latent z, which builds the
+# correlated scores, survives. Lengths come from the data rather than from n,
+# because a t-test's Score is 2n rows long while its n is per group.
+scale_code_snippet <- function(st, var, ref_mean, ref_sd, source_expr = var) {
     if (!st$use) return("")
     n_cat <- st$kmax - st$kmin + 1
+    sigma <- scale_error_sd(st$items, st$rel)
+    cuts  <- seq(-SCALE_SPAN, SCALE_SPAN, length.out = n_cat + 1)[2:n_cat]
+    tgt   <- if (is.na(st$target)) (st$kmin + st$kmax) / 2 else st$target
+    mu    <- scale_shift_for(tgt, cuts, st$kmin, st$kmax)
+    v     <- function(suffix) paste0(var, suffix)
     paste0(
         "\n# ", var, " as a ", st$items, "-item ", st$kmin, "-", st$kmax,
-        " Likert scale (target alpha = ", fmt_code(st$rel), ")\n",
-        "sigma_e <- ", fmt(scale_error_sd(st$items, st$rel)),
+        " Likert scale\n",
+        "#   target alpha = ", fmt_code(st$rel),
+        ", typical response = ", fmt_code(tgt), "\n",
+        v("_sigma"), " <- ", fmt_code(signif(sigma, 6)),
         "   # item noise implied by that alpha\n",
-        "z <- (", var, " - ", fmt_code(ref_mean), ") / ", fmt_code(ref_sd), "\n",
-        "cuts <- seq(-", fmt_code(SCALE_SPAN), ", ", fmt_code(SCALE_SPAN),
-        ", length.out = ", n_cat + 1, ")[2:", n_cat, "]\n",
-        "items <- replicate(", st$items, ", ", st$kmin,
-        " + findInterval((z + rnorm(n, 0, sigma_e)) / sqrt(1 + sigma_e^2), cuts))\n",
-        var, "_Scale_Mean <- rowMeans(items)\n"
+        v("_mu"), " <- ", fmt_code(signif(mu, 6)),
+        "   # shift that puts the average response at ", fmt_code(tgt), "\n",
+        v("_z"), " <- ",
+        if (isTRUE(all.equal(ref_mean, 0)) && isTRUE(all.equal(ref_sd, 1)))
+            source_expr
+        else paste0("(", source_expr, " - ", fmt_code(signif(ref_mean, 6)),
+                    ") / ", fmt_code(signif(ref_sd, 6))), "\n",
+        v("_cuts"), " <- seq(-", fmt_code(SCALE_SPAN), ", ",
+        fmt_code(SCALE_SPAN), ", length.out = ", n_cat + 1, ")[2:", n_cat, "]\n",
+        v("_items"), " <- replicate(", st$items, ", ", st$kmin,
+        " + findInterval(\n",
+        "    (", v("_z"), " + rnorm(length(", v("_z"), "), 0, ", v("_sigma"),
+        ")) / sqrt(1 + ", v("_sigma"), "^2) + ", v("_mu"), ",\n",
+        "    ", v("_cuts"), "))\n",
+        v("_Scale_Mean"), " <- rowMeans(", v("_items"), ")\n"
+    )
+}
+
+# The t-test IV scale is generated free of the groups, then reordered so that a
+# median split of its scale mean reproduces them exactly.
+iv_code_snippet <- function(st, n) {
+    if (!st$use) return("")
+    inner <- scale_code_snippet(st, "Group", 0, 1,
+                                source_expr = "rnorm(2 * n)")
+    paste0(
+        inner,
+        "# hand the low half of the scale to Group 1, the high half to Group 2\n",
+        "ord <- order(Group_Scale_Mean)\n",
+        "ord <- c(ord[1:n], ord[(n + 1):(2 * n)])\n",
+        "Group_items <- Group_items[ord, ]\n",
+        "Group_Scale_Mean <- Group_Scale_Mean[ord]\n"
     )
 }
 
@@ -706,9 +744,15 @@ corrServer <- function(id) {
                 scale_code_snippet(sx(), "X", p$mean_x, p$sd_x),
                 scale_code_snippet(sy(), "Y", p$mean_y, p$sd_y),
                 "\n",
-                "plot(X, Y)\n",
-                "abline(lm(Y ~ X))\n",
-                "cor(X, Y)"
+                # Analyse the same version of each variable the result boxes
+                # and the plot used, so the code reproduces the reported numbers.
+                {
+                    xa <- if (analysis_choice(sx()) == "mean") "X_Scale_Mean" else "X"
+                    ya <- if (analysis_choice(sy()) == "mean") "Y_Scale_Mean" else "Y"
+                    paste0("plot(", xa, ", ", ya, ")\n",
+                           "abline(lm(", ya, " ~ ", xa, "))\n",
+                           "cor(", xa, ", ", ya, ")")
+                }
             )
         })
 
@@ -1151,13 +1195,26 @@ ttestServer <- function(id) {
                 "group2 <- rnorm(n, mean = ", fmt_code(p$mean2),
                     ", sd = ", fmt_code(p$sd2), ")\n",
                 "\n",
+                # The scale is built on the whole sample, which the block has
+                # so far only as two separate group vectors.
+                if (sdv()$use || siv()$use)
+                    paste0("\n# the two groups as one data set\n",
+                           "Score <- c(group1, group2)\n",
+                           "Group <- rep(c(\"", G1, "\", \"", G2,
+                           "\"), each = n)\n") else "",
                 scale_code_snippet(sdv(), "Score",
                                    (p$mean1 + p$mean2) / 2,
                                    sqrt(p$sd_pooled^2 + (p$diff / 2)^2)),
+                iv_code_snippet(siv(), p$n),
                 "\n",
                 "# var.equal = TRUE gives Student's t (R defaults to Welch)\n",
-                "t.test(group2, group1, var.equal = TRUE)\n",
-                "boxplot(group1, group2)"
+                if (analysis_choice(sdv()) == "mean")
+                    paste0("g1 <- Score_Scale_Mean[Group == \"", G1, "\"]\n",
+                           "g2 <- Score_Scale_Mean[Group == \"", G2, "\"]\n",
+                           "t.test(g2, g1, var.equal = TRUE)\n",
+                           "boxplot(g1, g2)")
+                else paste0("t.test(group2, group1, var.equal = TRUE)\n",
+                            "boxplot(group1, group2)")
             )
         })
 
@@ -1618,13 +1675,24 @@ pairedServer <- function(id) {
                     " * (", fmt_code(p$rho), " * z + sqrt(1 - ", fmt_code(p$rho),
                     "^2) * rnorm(n))\n",
                 "\n",
+                # Both measurements go through the SAME mapping, or the
+                # difference between them would be standardized away.
                 scale_code_snippet(sdv(), "Score1",
                                    (p$mean_c1 + p$mean_c2) / 2,
                                    sqrt((p$sd_c1^2 + p$sd_c2^2) / 2 +
                                         (p$diff / 2)^2)),
+                scale_code_snippet(sdv(), "Score2",
+                                   (p$mean_c1 + p$mean_c2) / 2,
+                                   sqrt((p$sd_c1^2 + p$sd_c2^2) / 2 +
+                                        (p$diff / 2)^2)),
                 "\n",
-                "t.test(Score2, Score1, paired = TRUE)\n",
-                "cor(Score1, Score2)"
+                {
+                    a <- if (analysis_choice(sdv()) == "mean")
+                        c("Score1_Scale_Mean", "Score2_Scale_Mean")
+                    else c("Score1", "Score2")
+                    paste0("t.test(", a[2], ", ", a[1], ", paired = TRUE)\n",
+                           "cor(", a[1], ", ", a[2], ")")
+                }
             )
         })
 
