@@ -121,3 +121,48 @@ testServer(ttestServer, args = list(id = "t"), {
         ok("ceiling draw still had both groups (acceptable)", TRUE)
     }
 })
+
+cat("\nThe data table is ordered to show the split\n")
+testServer(ttestServer, args = list(id = "t"), {
+    do.call(session$setInputs, IV())
+    tab <- display_data()
+    ok("table is sorted by the IV scale mean",
+       !is.na(tab$Group_Scale_Mean[1]) &&
+       !is.unsorted(tab$Group_Scale_Mean))
+    # Group membership rides on the "raw" column group for the IV, so it is
+    # only in the table when the student asks for it.
+    ok("Group is absent unless its column group is ticked",
+       is.null(tab$Group))
+    session$setInputs(iv_cols = c("items", "mean", "raw"))
+    tab <- display_data()
+    ok("with Group shown, sorting puts one group entirely before the other",
+       length(rle(as.character(tab$Group))$lengths) == 2)
+    ok("the CSV keeps participant order",
+       !is.unsorted(labelled_data()[[ID_LABEL]]))
+    ok("sorting does not drop or duplicate anyone",
+       identical(sort(tab[[ID_LABEL]]), labelled_data()[[ID_LABEL]]))
+    ok("a note explains the ordering", !is.null(output$sort_note))
+
+    session$setInputs(iv_use = FALSE)
+    ok("without the IV scale the table stays in participant order",
+       !is.unsorted(display_data()[[ID_LABEL]]))
+    ok("and the note goes away", is.null(output$sort_note))
+})
+
+cat("\nThe warning is hard to miss\n")
+testServer(ttestServer, args = list(id = "t"), {
+    do.call(session$setInputs, IV())
+    for (r in 1:30) {
+        session$setInputs(generate = r)
+        d <- sim_data()
+        if (sum(d$Group == G1) != sum(d$Group == G2)) break
+    }
+    h <- paste(as.character(output$split_note), collapse = "")
+    ok("uses the loud warning style", grepl("split-warn", h, fixed = TRUE))
+    ok("leads with a warning symbol and the sizes",
+       grepl("\u26a0", h) && grepl("Unequal groups", h, fixed = TRUE))
+    ok("the force button is styled as a danger action",
+       grepl("btn-danger", h, fixed = TRUE))
+    ok("points students at the sorted table",
+       grepl("Sort the data table", h, fixed = TRUE))
+})

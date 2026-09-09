@@ -139,6 +139,19 @@ anything, and an undo link restores the original scores. The forced state
 resets whenever a new sample or a new IV scale is drawn, so the honest
 behaviour is what a student meets first every time.
 
+The warning is deliberately loud: full width, above everything else in the
+main panel, red with a heavy left border, a warning symbol, uppercase heading
+naming the realized sizes, and a three-beat pulse when it appears. An earlier
+muted-amber version in the plot column went unnoticed even by someone looking
+for it.
+
+The t-test data table is **ordered by the IV scale mean** whenever the IV is
+measured as a scale, so reading down the column shows exactly where the cut
+falls and which tied participants ended up on which side. The CSV keeps
+participant order — row order is irrelevant to a stats package, and an
+ID-ordered file is what students expect — with a note under the table saying
+so.
+
 Consequences worth knowing:
 
 - **The IV scale is the design, not a measurement overlay.** Redrawing it

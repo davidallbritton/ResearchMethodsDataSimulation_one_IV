@@ -546,10 +546,22 @@ app_css <- HTML("
         display: block; border: 1px solid #d9b38c; border-radius: 6px;
         background: #fdf6ec; color: #7a5320; padding: 8px 12px;
         margin-top: 10px; max-width: 460px; font-size: 95%; }
-    .split-warn { border: 1px solid #c9a227; border-radius: 6px;
-                  background: #fdf8e3; color: #6b5310; padding: 9px 12px;
-                  margin-bottom: 10px; max-width: 560px; font-size: 93%; }
-    .split-warn .btn { margin-top: 8px; }
+    /* Unequal groups are the lesson of the whole IV-as-scale feature, so the
+       warning is deliberately loud: red, full width, above everything else,
+       and it pulses a few times when it first appears. */
+    .split-warn { border: 2px solid #b32020; border-left: 10px solid #b32020;
+                  border-radius: 6px; background: #fdecea; color: #7a1a1a;
+                  padding: 12px 16px; margin: 0 0 16px 0; font-size: 100%;
+                  box-shadow: 0 2px 6px rgba(179, 32, 32, .25);
+                  animation: warnpulse 1.1s ease-in-out 3; }
+    .split-warn .warn-head { display: block; font-weight: bold; font-size: 116%;
+                             text-transform: uppercase; letter-spacing: .04em;
+                             margin-bottom: 5px; color: #a01818; }
+    .split-warn .btn { margin-top: 10px; }
+    @keyframes warnpulse {
+        0%, 100% { box-shadow: 0 2px 6px rgba(179, 32, 32, .25); }
+        50%      { box-shadow: 0 0 0 7px rgba(179, 32, 32, .30); }
+    }
     .split-note { border: 1px solid #b8c4d0; border-radius: 6px;
                   background: #f4f7fa; color: #44515e; padding: 8px 12px;
                   margin-bottom: 10px; max-width: 560px; font-size: 90%; }
@@ -1113,6 +1125,9 @@ ttestUI <- function(id) {
 
             mainPanel(
                 width = 8,
+                # Full width and above everything: the unequal-groups warning
+                # is the point of measuring the IV as a scale.
+                uiOutput(ns("split_note")),
                 div(
                     class = "panel-row",
                     div(
@@ -1125,6 +1140,7 @@ ttestUI <- function(id) {
                             downloadButton(ns("download_csv"), "CSV",
                                            class = "btn-xs")
                         ),
+                        uiOutput(ns("sort_note")),
                         div(
                             style = "max-height: 420px; overflow-y: auto;",
                             tableOutput(ns("data_table"))
@@ -1133,7 +1149,6 @@ ttestUI <- function(id) {
                     div(
                         class = "plot-col",
                         tags$h4("Independent Groups Comparison"),
-                        uiOutput(ns("split_note")),
                         plotOutput(ns("dotplot"), height = "500px"),
                         uiOutput(ns("ttest_result")),
                         uiOutput(ns("anova_result")),
@@ -1349,8 +1364,27 @@ ttestServer <- function(id) {
             out
         })
 
+        # Ordered so the median split is visible: with the IV measured as a
+        # scale, reading down the scale mean shows exactly where the cut falls
+        # and which tied participants ended up on which side. The CSV keeps
+        # participant order -- row order does not matter to a stats package,
+        # and an ID-ordered file is what students expect to open.
+        display_data <- reactive({
+            d <- labelled_data()
+            if (isTRUE(input$iv_use)) d <- d[order(scaled_iv()$mean), ,
+                                             drop = FALSE]
+            d
+        })
+
+        output$sort_note <- renderUI({
+            if (!isTRUE(input$iv_use)) return(NULL)
+            helpText(HTML("Sorted by the IV scale mean so you can see where the
+                           median split falls. The downloaded CSV keeps
+                           participant order."))
+        })
+
         output$data_table <- renderTable({
-            labelled_data()
+            display_data()
         }, digits = 2, striped = TRUE)
 
         output$download_csv <- downloadHandler(
@@ -1384,17 +1418,20 @@ ttestServer <- function(id) {
             if (n1 == n2) return(NULL)
             div(
                 class = "split-warn",
-                HTML(sprintf(
-                    "<b>The median split gave unequal groups: %d and %d.</b>
-                     Several participants share the same scale mean, and a
-                     median split must put all of them on the same side. This
-                     is what splitting a real measured variable does \u2014 the
-                     scale is too coarse to divide people evenly, and which
-                     side a tied participant lands on is decided by the cut-off
-                     rather than by anything about that person.", n1, n2)),
+                span(class = "warn-head",
+                     sprintf("\u26a0 Unequal groups: %d vs %d", n1, n2)),
+                HTML("Several participants share the same scale mean, and a
+                      median split must put all of them on the same side. This
+                      is what splitting a real measured variable does \u2014 the
+                      scale is too coarse to divide people evenly, and which
+                      side a tied participant lands on is decided by the
+                      cut-off rather than by anything about that person.
+                      <b>Sort the data table by the scale mean to see exactly
+                      where the split falls.</b>"),
+                br(),
                 actionButton(ns("iv_force"),
                              "Force equal group sizes (not how real data works)",
-                             class = "btn-xs btn-default"))
+                             class = "btn-sm btn-danger"))
         })
 
         output$sample_stats <- renderTable({
