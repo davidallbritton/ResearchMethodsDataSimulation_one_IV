@@ -128,6 +128,12 @@ Every result box, and the plots, use whichever version of a variable is in the
 file. On a scale metric the population reference lines are dropped, since they
 are in the wrong units.
 
+### Column-group labels are per variable
+`scaleControlsUI()` takes a `raw_label` argument naming the third column group.
+It defaults to "Original continuous score", but the t-test IV passes "Group
+membership", since for a grouping IV that column holds the group label rather
+than a score.
+
 ### Descriptives layout
 Implemented as an extra **column** ("This sample as scales") rather than a row
 — the rows are statistic names, so a column is the parallel structure. The
@@ -136,11 +142,12 @@ mark.
 
 ### Redrawing scales without redrawing the sample
 
-Each panel's scale box has its own **Generate Scale Scores** button. It draws a
-fresh set of Likert items from the sample already on screen, so students can
-watch one fixed set of "true" scores turn into different scale scores each
-time — the measurement error made visible. **Generate Data** still draws a
-whole new sample.
+**Every variable** has its own **Generate Scale Scores** button, inside its own
+scale box. It draws a fresh set of Likert items from the sample already on
+screen, so students can watch one fixed set of "true" scores turn into
+different scale scores each time — the measurement error made visible.
+Redrawing one variable's scale leaves every other variable's scale untouched,
+and **Generate Data** still draws a whole new sample.
 
 This required splitting the scale settings in two:
 
@@ -152,15 +159,133 @@ This required splitting the scale settings in two:
   ticking "include the continuous score" must not silently change the scale
   numbers underneath it.
 
-Each variable also has its own `scaled_*` reactive, so turning a scale on for
-one variable does not redraw another's. Ticking a box for the first time
-generates immediately using the current snapshot, rather than leaving the
-student staring at an empty box until they find the button.
+Each variable has its own snapshot (`spec_x`, `spec_y`, `spec_iv`, `spec_dv`)
+and its own `scaled_*` reactive, so neither turning a scale on nor redrawing it
+disturbs any other variable. Ticking a box for the first time generates
+immediately using the current snapshot, rather than leaving the student staring
+at an empty box until they find the button.
 
 Verified in `scratchpad/test_redraw.R` and `test_tick.R`: the sample is
 byte-identical across scale redraws, the column picker changes no numbers, item
 settings take effect only on the button, and the t-test IV median split still
 reproduces the groups after every redraw.
+
+### Typical response: floor and ceiling effects
+
+Thresholds are symmetric about zero, so an unshifted scale always averages the
+middle of its response range. No setting of `SCALE_SPAN` can change that — it
+widens or narrows symmetrically — so the app could not produce a floor or
+ceiling effect at all. Shifting the latent distribution against the thresholds
+is what does that.
+
+Each variable now has a **Typical response** slider: numbers on the axis, zone
+labels reading *Floor effects — Well targeted — Ceiling effects*, defaulting to
+the midpoint (which reproduces the previous centred behaviour exactly).
+
+The required shift is a one-dimensional root find. For items ~ N(mu, 1),
+E[response] = k_min + sum(pnorm(mu - cuts)), which is monotone in mu, so
+`scale_shift_for()` solves it with `uniroot`, capping mu at +/-10 at the
+endpoints where the true shift is infinite.
+
+Measured (20,000 cases, 4 items, alpha .8, 1-7 scale) — the realized mean
+tracks the request exactly, and the endpoints are deliberately degenerate:
+
+| target | realized mean | % at 7 | % at 1 |
+|--------|---------------|--------|--------|
+| 1      | 1.00          | 0.0    | 99.9   |
+| 2      | 2.00          | 0.0    | 43.1   |
+| 4      | 4.00          | 3.7    | 3.7    |
+| 6      | 6.00          | 42.6   | 0.0    |
+| 7      | 7.00          | 99.9   | 0.0    |
+
+The slider's bounds follow the Low/High inputs via `observe_scale_range()`,
+which clamps the current position into the new range rather than snapping it
+back to the midpoint.
+
+`SCALE_SPAN` stays fixed at 2.5. Measured across 1.5-3.5, the correlation
+between the scale mean and the true score varies only between .879 and .887,
+peaking at 2.5 — it is a cosmetic knob controlling the shape of the response
+distribution, not an accuracy one, so it did not earn a control.
+
+### Degenerate data is reachable on purpose, and explained
+
+The endpoints of the slider, and a population SD of 0, really do leave a
+variable with no variance. That is deliberate: watching a measure fail is the
+lesson. But the statistics fail in three different ways, so the condition is
+detected **up front** rather than caught afterwards:
+
+- `t.test(var.equal = TRUE)` throws *"data are essentially constant"*
+- `cor()` and `cor.test()` return `NA` with only a warning — which would print
+  as though it were a finding
+- `summary(lm())$fstatistic` returns `NULL`, crashing the line that reads it
+
+**This was already broken in v1.0.0**, independent of scales: the SD inputs
+allow `min = 0`, and setting one produced raw R errors (*subscript out of
+bounds*, *'a' and 'b' must be finite*) on the correlation and paired pages.
+
+Messages go through `validate()`/`need()`, styled as explanation boxes rather
+than Shiny's default grey italic. Three tiers:
+
+1. **No variability at all** — `msg_no_variance()`.
+2. **No variability within groups** — `msg_no_within_variance()`. Separately
+   reachable when groups differ but nobody inside a group does; t is infinite
+   rather than undefined.
+3. **Computable but barely** — `caution_note()` appends a note to the primary
+   result box when a scale shows two or fewer distinct values, or more than 60%
+   of responses sit at an endpoint. This is the ceiling-effect sweet spot.
+
+Surfaces that can still render keep rendering, because that is where the lesson
+lands: the descriptives table shows the means with `SD = 0.00` and an em dash
+where a statistic is undefined (`fmt()` and `fmt_r()` now map non-finite values
+to em dashes), and the plots still draw the flat row of identical points with
+an overlaid note.
+
+The ANOVA and point-biserial boxes refuse on the *same* condition as the
+t-test, since both claim to mirror it — otherwise a student would see the
+t-test decline while the ANOVA below it reported F = Inf.
+
+## Tests
+
+`tests/` holds a regression suite. Run it all:
+
+    Rscript tests/run_all.R
+
+It prints a per-file summary and exits non-zero if anything fails, so it can
+gate a deploy. Individual files run the same way (`Rscript tests/test_guard.R`),
+and both forms work from the project root or from inside `tests/`.
+
+| File | Covers |
+|------|--------|
+| `test_scales.R` | engine: item range, alpha targeting, sample-independent mapping, degenerate inputs |
+| `test_target.R` | Typical response maths, floor/ceiling reachability, guard helpers |
+| `test_server.R` | column selection and CSV assembly in all three modules |
+| `test_outputs.R` | every output renders under 12 scale configurations |
+| `test_redraw.R` | redrawing scales leaves the sample byte-identical |
+| `test_tick.R` | ticking generates immediately; unticking restores |
+| `test_perbutton.R` | per-variable buttons are independent; IV column label |
+| `test_slider_wiring.R` | every slider reaches its generator |
+| `test_guard.R` | degenerate settings explain themselves instead of erroring |
+
+`helper.R` finds `app.R` by walking up from the working directory, loads it
+without calling `shinyApp()`, and provides `ok()` plus the tally the runner
+reads back.
+
+Two notes for anyone adding tests:
+
+- **Pin the seed.** `test_guard.R` and `test_outputs.R` originally had none, and
+  a result flipped purely because running from a different directory changed the
+  RNG state.
+- **Endpoint targets are likely degenerate, not certainly so.** With four items
+  at target 7 about 99.6% of people max out, so a sample of 30 keeps some
+  variance roughly a tenth of the time. Assert on population SD = 0 when a test
+  needs guaranteed constancy.
+
+`test_slider_wiring.R` exists because of a bug that shipped past the other
+tests: `make_scale_items()` gained a `target` argument that only the correlation
+module passed, so three of the four sliders silently did nothing. The engine was
+tested, the wiring was not. That file also counts the generator call sites and
+asserts every one passes a target, to catch the same class of mistake if a
+fourth panel is added.
 
 ## Open questions
 
@@ -168,12 +293,5 @@ reproduces the groups after every redraw.
    panels. A fourth "scale data" page or a separate app remain possible; the
    generation functions are self-contained enough to move.
 
-2. **"Original continuous score" label on the t-test IV.** For the IV that
-   column is the group label, not a continuous score, so the checkbox label is
-   slightly off there.
-
-3. **`SCALE_SPAN` is fixed at 2.5** and not exposed. It controls how much
-   responses pile into the middle categories versus the extremes.
-
-4. **`APP_VERSION` is now `1.1.0-dev`** so the footer does not claim to be the
+2. **`APP_VERSION` is now `1.1.0-dev`** so the footer does not claim to be the
    tagged v1.0.0 build. Settle the real number before deploying.

@@ -42,8 +42,10 @@ C2 <- "Condition 2"
 
 # ---- Shared formatting helpers ----------------------------------------------
 
-# One display format everywhere on screen: 2 decimals.
-fmt <- function(x) sprintf("%.2f", x)
+# One display format everywhere on screen: 2 decimals. Undefined statistics --
+# which degenerate settings really can produce -- print as an em dash rather
+# than "NA", so a table can still show what IS computable next to what is not.
+fmt <- function(x) ifelse(is.finite(x), sprintf("%.2f", x), "\u2014")
 
 # ...except in the R code blocks, which must reproduce what the app did.
 # as.character() keeps a typed 1.005 as 1.005 rather than rounding to 1.00.
@@ -55,7 +57,9 @@ fmt_p <- function(p) {
 }
 
 # APA correlation: 2 decimals, no leading zero, sign preserved (e.g. -.45).
-fmt_r <- function(x) sub("(-?)0\\.", "\\1.", sprintf("%.2f", x))
+fmt_r <- function(x) ifelse(is.finite(x),
+                            sub("(-?)0\\.", "\\1.", sprintf("%.2f", x)),
+                            "\u2014")
 
 `%||%` <- function(a, b) if (is.null(a) || length(a) == 0 || is.na(a[1])) b else a
 
@@ -95,14 +99,36 @@ scale_error_sd <- function(n_items, reliability) {
     sqrt(1 / p - 1)
 }
 
+# The latent shift that puts the AVERAGE RESPONSE at `target`.
+#
+# Thresholds are symmetric about zero, so an unshifted scale always averages the
+# middle of its response range -- which means no amount of widening or narrowing
+# can produce a floor or ceiling effect. Shifting the latent distribution
+# against the thresholds is what does that.
+#
+# For items ~ N(mu, 1), E[response] = k_min + sum(pnorm(mu - cuts)), which is
+# monotone in mu, so the required shift is a one-dimensional root find. At the
+# very ends of the range the shift is infinite, so it is capped -- which is
+# exactly the degenerate "everybody answered 7" case, deliberately reachable.
+scale_shift_for <- function(target, cuts, k_min, k_max) {
+    tgt <- max(k_min + 1e-3, min(k_max - 1e-3, target))
+    f <- function(mu) k_min + sum(pnorm(mu - cuts)) - tgt
+    if (f(-10) >= 0) return(-10)
+    if (f(10)  <= 0) return(10)
+    uniroot(f, c(-10, 10))$root
+}
+
 # Turn continuous scores into integer Likert items.
 #
 # ref_mean/ref_sd define the shared mapping. Pass the SAME reference for
 # variables that must stay comparable -- the two groups of a t-test, the two
 # conditions of a paired design -- otherwise each is standardized to its own
 # centre and the difference between them is erased.
+#
+# target is where the average response should land on the response range.
+# Defaulting to the midpoint reproduces an unshifted, symmetric scale.
 make_scale_items <- function(score, ref_mean, ref_sd, n_items,
-                             k_min, k_max, reliability) {
+                             k_min, k_max, reliability, target = NULL) {
     n_items <- max(1, round(n_items))
     k_min <- round(k_min); k_max <- round(k_max)
     if (k_max <= k_min) k_max <- k_min + 1
@@ -116,8 +142,11 @@ make_scale_items <- function(score, ref_mean, ref_sd, n_items,
     sd_item <- sqrt(1 + sigma_e^2)
     cuts <- seq(-SCALE_SPAN, SCALE_SPAN, length.out = n_cat + 1)[2:n_cat]
 
+    if (is.null(target)) target <- (k_min + k_max) / 2
+    mu <- scale_shift_for(target, cuts, k_min, k_max)
+
     items <- lapply(seq_len(n_items), function(j) {
-        istar <- (z + rnorm(length(z), 0, sigma_e)) / sd_item
+        istar <- (z + rnorm(length(z), 0, sigma_e)) / sd_item + mu
         k_min + findInterval(istar, cuts)
     })
     out <- as.data.frame(items)
@@ -125,14 +154,14 @@ make_scale_items <- function(score, ref_mean, ref_sd, n_items,
     out
 }
 
-# Which column groups a scale can contribute to the CSV.
-SCALE_COLS <- c("Individual items"          = "items",
-                "Scale mean"                = "mean",
-                "Original continuous score" = "raw")
-
 # The scale controls for one variable: the on/off box, then the definition
-# inputs and the column picker, revealed only when it is ticked.
-scaleControlsUI <- function(ns, prefix, label) {
+# inputs, the column picker and this variable's own redraw button, all revealed
+# only when it is ticked.
+#
+# raw_label names the third column group. It defaults to the continuous score,
+# but on a grouping IV that column is the group label, not a score.
+scaleControlsUI <- function(ns, prefix, label,
+                            raw_label = "Original continuous score") {
     use_id <- ns(paste0(prefix, "_use"))
     tagList(
         checkboxInput(use_id, label, value = FALSE),
@@ -151,10 +180,24 @@ scaleControlsUI <- function(ns, prefix, label) {
                 numericInput(ns(paste0(prefix, "_rel")),
                              "Reliability (Cronbach's \u03b1):",
                              value = 0.8, min = 0.05, max = 0.99, step = 0.05),
+                tags$label("Typical response", class = "control-label"),
+                div(class = "zone-labels",
+                    span("Floor effects"), span("Well targeted"),
+                    span("Ceiling effects")),
+                sliderInput(ns(paste0(prefix, "_target")), label = NULL,
+                            min = 1, max = 7, value = 4, step = 0.5,
+                            width = "100%"),
                 checkboxGroupInput(ns(paste0(prefix, "_cols")),
                                    "Include in the CSV:",
-                                   choices = SCALE_COLS,
-                                   selected = c("items", "mean"))
+                                   choices = setNames(
+                                       c("items", "mean", "raw"),
+                                       c("Individual items", "Scale mean",
+                                         raw_label)),
+                                   selected = c("items", "mean")),
+                actionButton(ns(paste0(prefix, "_gen")), "Generate Scale Scores",
+                             class = "btn-primary btn-sm", width = "100%"),
+                helpText("Redraws just this scale from the sample scores already
+                          on screen.")
             )
         )
     )
@@ -173,33 +216,96 @@ scale_spec_of <- function(input, prefix) {
         items = max(1, round(input[[paste0(prefix, "_items")]] %||% 4)),
         kmin  = round(input[[paste0(prefix, "_min")]] %||% 1),
         kmax  = round(input[[paste0(prefix, "_max")]] %||% 7),
-        rel   = input[[paste0(prefix, "_rel")]] %||% 0.8
+        rel   = input[[paste0(prefix, "_rel")]] %||% 0.8,
+        target = input[[paste0(prefix, "_target")]] %||% NA
     )
+}
+
+# The slider's bounds come from the Low/High inputs, so it has to be rebuilt
+# whenever they change. The current position is kept, clamped into the new
+# range, rather than snapping back to the midpoint.
+observe_scale_range <- function(input, session, prefix) {
+    observeEvent(list(input[[paste0(prefix, "_min")]],
+                      input[[paste0(prefix, "_max")]]), {
+        lo <- round(input[[paste0(prefix, "_min")]] %||% 1)
+        hi <- round(input[[paste0(prefix, "_max")]] %||% 7)
+        if (hi <= lo) hi <- lo + 1
+        v <- input[[paste0(prefix, "_target")]] %||% ((lo + hi) / 2)
+        updateSliderInput(session, paste0(prefix, "_target"),
+                          min = lo, max = hi, step = 0.5,
+                          value = max(lo, min(hi, v)))
+    }, ignoreInit = TRUE)
 }
 
 # The live half, merged with the snapshotted half for one variable.
 scale_settings <- function(input, prefix, spec) {
     c(list(use  = isTRUE(input[[paste0(prefix, "_use")]]),
            cols = input[[paste0(prefix, "_cols")]] %||% character(0)),
-      spec[[prefix]])
+      spec)
 }
 
-# The button that redraws scale scores against the sample already on screen.
-scaleGenerateUI <- function(ns, prefixes) {
-    cond <- paste(sprintf("input['%s'] == true", vapply(prefixes,
-                  function(x) ns(paste0(x, "_use")), character(1))),
-                  collapse = " || ")
-    conditionalPanel(
-        condition = cond,
-        div(style = "margin-top: 4px;",
-            actionButton(ns("gen_scales"), "Generate Scale Scores",
-                         class = "btn-primary btn-sm", width = "100%"),
-            helpText(HTML("Draws a fresh set of Likert items from the
-                <b>same</b> sample scores already on screen \u2014 so you can
-                watch one set of true scores turn into different scale scores
-                each time. Click <b>Generate Data</b> instead to draw a whole
-                new sample.")))
-    )
+
+# ---- Degenerate-data guards -------------------------------------------------
+#
+# Extreme settings really can leave a variable with no variance: a population SD
+# of 0, or "Typical response" dragged to the end of the scale so everyone gives
+# the same answer. Those cases are worth reaching -- seeing a measure fail is
+# the lesson -- but the statistics fail in three different ways, so the
+# condition is detected up front rather than caught afterwards:
+#
+#   * t.test(var.equal = TRUE) throws "data are essentially constant"
+#   * cor() and cor.test() return NA with only a warning -- which would print
+#     as a result unless we stop first
+#   * summary(lm())$fstatistic returns NULL, crashing the line that reads it
+#
+# The messages go through validate()/need(), so the explanation appears in place
+# of the statistic instead of a red R error.
+
+# A midpoint target reproduces the unshifted scale, so NA means "leave centred".
+spec_target <- function(spec) if (is.na(spec$target)) NULL else spec$target
+
+CONST_TOL <- 1e-9
+is_constant <- function(v) {
+    s <- suppressWarnings(sd(as.numeric(v)))
+    !is.finite(s) || s < CONST_TOL
+}
+
+# Nothing varies at all.
+msg_no_variance <- function(labels) {
+    sprintf("Every participant has the same value for %s, so it has no
+             variability at all. Statistics that describe how scores vary
+             together cannot be computed from a variable that does not vary.
+             Move \u201cTypical response\u201d away from the end of the scale,
+             or raise the population SD.",
+            paste(labels, collapse = " and "))
+}
+
+# Varies between groups but not within them: perfect separation.
+msg_no_within_variance <- function() {
+    "Every participant within a group gave exactly the same answer, so there is
+     no variability inside either group. The groups are perfectly separated,
+     which makes t infinitely large and impossible to calculate. Real data
+     always has some spread inside each group."
+}
+
+# Computable, but only just: worth a caution rather than a refusal.
+caution_note <- function(v, k_min, k_max) {
+    v <- as.numeric(v)
+    n_distinct <- length(unique(v))
+    at_end <- mean(v <= k_min + 1e-9 | v >= k_max - 1e-9)
+    if (n_distinct <= 2)
+        return(sprintf("Only %d different score%s appear\u2014 the measure is
+                        barely discriminating between people, so these estimates
+                        are very unstable.",
+                       n_distinct, if (n_distinct == 1) "" else "s"))
+    if (at_end > 0.6)
+        return(sprintf("%.0f%% of scores sit at the very top or bottom of the
+                        response range. That is a %s effect: the measure cannot
+                        record how much further apart people really are.",
+                       100 * at_end,
+                       if (mean(v >= k_max - 1e-9) > mean(v <= k_min + 1e-9))
+                           "ceiling" else "floor"))
+    NULL
 }
 
 # Which version of a variable the student will actually analyze -- that is,
@@ -310,6 +416,17 @@ app_css <- HTML("
     .scale-box .form-group { margin-bottom: 6px; }
     .scale-box label { font-weight: normal; }
     .scale-box .shiny-input-checkboxgroup label { font-weight: bold; }
+    /* Zone labels above the Typical response slider. */
+    .zone-labels { display: flex; justify-content: space-between;
+                   font-size: 78%; color: #5a6570; margin-bottom: -6px; }
+    /* validate()/need() messages, styled as explanations rather than errors. */
+    .shiny-output-error-validation {
+        display: block; border: 1px solid #d9b38c; border-radius: 6px;
+        background: #fdf6ec; color: #7a5320; padding: 8px 12px;
+        margin-top: 10px; max-width: 460px; font-size: 95%; }
+    .caution-note { border: 1px solid #d9b38c; border-radius: 6px;
+                    background: #fdf6ec; color: #7a5320; padding: 6px 10px;
+                    margin-top: 8px; max-width: 460px; font-size: 90%; }
     /* The descriptives column matching what will be downloaded. */
     .csv-col { background: #fff6d9; font-weight: bold; }
     /* Version footer, shown under every page. */
@@ -363,8 +480,7 @@ corrUI <- function(id) {
                         "Replace a continuous score with a set of Likert items,
                          the way a real questionnaire would measure it."),
                     scaleControlsUI(ns, "x", "Predictor / IV (X) as a scale"),
-                    scaleControlsUI(ns, "y", "Outcome / DV (Y) as a scale"),
-                    scaleGenerateUI(ns, c("x", "y"))
+                    scaleControlsUI(ns, "y", "Outcome / DV (Y) as a scale")
                 ),
 
                 # Sample size and the button sit outside the box: how many cases
@@ -453,14 +569,20 @@ corrServer <- function(id) {
             p
         }, ignoreNULL = FALSE)
 
-        # Item settings are re-read when EITHER button is pressed. sim_data()
-        # does not depend on this, so redrawing scales leaves the sample alone.
-        scale_spec <- eventReactive(list(input$generate, input$gen_scales), {
-            list(x = scale_spec_of(input, "x"), y = scale_spec_of(input, "y"))
-        }, ignoreNULL = FALSE)
+        # Each variable's item settings are re-read when Generate Data runs or
+        # when that variable's own redraw button is pressed. sim_data() does not
+        # depend on these, so redrawing a scale leaves the sample alone -- and
+        # each spec is separate, so redrawing X does not disturb Y.
+        spec_x <- eventReactive(list(input$generate, input$x_gen),
+                                scale_spec_of(input, "x"), ignoreNULL = FALSE)
+        spec_y <- eventReactive(list(input$generate, input$y_gen),
+                                scale_spec_of(input, "y"), ignoreNULL = FALSE)
 
-        sx <- reactive(scale_settings(input, "x", scale_spec()))
-        sy <- reactive(scale_settings(input, "y", scale_spec()))
+        sx <- reactive(scale_settings(input, "x", spec_x()))
+        sy <- reactive(scale_settings(input, "y", spec_y()))
+
+        observe_scale_range(input, session, "x")
+        observe_scale_range(input, session, "y")
 
         sim_data <- reactive({
             p <- params()
@@ -478,18 +600,19 @@ corrServer <- function(id) {
         mk_scale <- function(use, spec, score, ref_mean, ref_sd) {
             if (!use) return(NULL)
             it <- make_scale_items(score, ref_mean, ref_sd, spec$items,
-                                   spec$kmin, spec$kmax, spec$rel)
+                                   spec$kmin, spec$kmax, spec$rel,
+                                   target = spec_target(spec))
             list(items = it, mean = rowMeans(it))
         }
 
         scaled_x <- reactive({
             p <- params()
-            mk_scale(isTRUE(input$x_use), scale_spec()$x,
+            mk_scale(isTRUE(input$x_use), spec_x(),
                      sim_data()$X, p$mean_x, p$sd_x)
         })
         scaled_y <- reactive({
             p <- params()
-            mk_scale(isTRUE(input$y_use), scale_spec()$y,
+            mk_scale(isTRUE(input$y_use), spec_y(),
                      sim_data()$Y, p$mean_y, p$sd_y)
         })
         scaled <- reactive(list(x = scaled_x(), y = scaled_y()))
@@ -609,7 +732,8 @@ corrServer <- function(id) {
             roman <- c("M", "s", "M", "s", "s", "b", "r")
             pop   <- c(p$mean_x, p$sd_x, p$mean_y, p$sd_y, p$sd_e, p$slope, p$r)
             samp  <- c(mean(d$X), sd(d$X), mean(d$Y), sd(d$Y),
-                       summary(fit)$sigma, coef(fit)[2], cor(d$X, d$Y))
+                       summary(fit)$sigma, coef(fit)[2],
+                       suppressWarnings(cor(d$X, d$Y)))
 
             tab <- data.frame(
                 " "          = c("Mean of X", "SD of X", "Mean of Y",
@@ -634,8 +758,10 @@ corrServer <- function(id) {
                 Xs <- if (!is.null(sc$x)) sc$x$mean else d$X
                 Ys <- if (!is.null(sc$y)) sc$y$mean else d$Y
                 fs <- lm(Ys ~ Xs)
+                fs_sig <- suppressWarnings(summary(fs)$sigma)
                 sv <- c(mean(Xs), sd(Xs), mean(Ys), sd(Ys),
-                        summary(fs)$sigma, coef(fs)[2], cor(Xs, Ys))
+                        fs_sig, coef(fs)[2],
+                        suppressWarnings(cor(Xs, Ys)))
                 tab[[paste0("This sample as scales", csv_flag(!raw_in_csv))]] <-
                     csv_cell(paste(roman, "=", fmt(sv)), !raw_in_csv)
             }
@@ -664,35 +790,50 @@ corrServer <- function(id) {
 
             # On a scale metric the population line is in the wrong units, and
             # the model-based axis limits no longer apply, so both are dropped.
+            # With no variability there is no line to fit, but the points are
+            # still worth showing -- the flat row of identical dots IS the point.
+            flat <- is_constant(a$X) || is_constant(a$Y)
+            r_txt <- paste("Sample r =", fmt(suppressWarnings(cor(a$X, a$Y))))
+
             if (a$x_scaled || a$y_scaled) {
                 plot(a$X, a$Y,
                      xlab = if (a$x_scaled) "X (scale mean)" else "X",
                      ylab = if (a$y_scaled) "Y (scale mean)" else "Y",
-                     pch = 19, col = "steelblue",
-                     main = paste("Sample r =", fmt(cor(a$X, a$Y))))
-                abline(lm(a$Y ~ a$X), col = "firebrick", lwd = 2)
-                legend("topleft", bty = "n",
-                       legend = "Sample regression line",
-                       col = "firebrick", lwd = 2)
+                     pch = 19, col = "steelblue", main = r_txt)
+                if (!flat) {
+                    abline(lm(a$Y ~ a$X), col = "firebrick", lwd = 2)
+                    legend("topleft", bty = "n",
+                           legend = "Sample regression line",
+                           col = "firebrick", lwd = 2)
+                }
             } else {
                 plot(a$X, a$Y,
                      xlab = "X", ylab = "Y",
                      xlim = lim$x, ylim = lim$y,
-                     pch = 19, col = "steelblue",
-                     main = paste("Sample r =", fmt(cor(a$X, a$Y))))
+                     pch = 19, col = "steelblue", main = r_txt)
                 # the line the data actually came from
                 abline(a = p$b0, b = p$slope, col = "grey40", lwd = 2, lty = 2)
-                # the line estimated from this particular sample
-                abline(lm(a$Y ~ a$X), col = "firebrick", lwd = 2)
+                if (!flat) {
+                    # the line estimated from this particular sample
+                    abline(lm(a$Y ~ a$X), col = "firebrick", lwd = 2)
+                }
                 legend("topleft", bty = "n",
                        legend = c("Population line (the true model)",
-                                  "Sample regression line"),
-                       col = c("grey40", "firebrick"), lwd = 2, lty = c(2, 1))
+                                  if (!flat) "Sample regression line"),
+                       col = c("grey40", if (!flat) "firebrick"),
+                       lwd = 2, lty = if (flat) 2 else c(2, 1))
+            }
+            if (flat) {
+                mtext("No variability \u2014 no relationship can be estimated",
+                      side = 3, line = 0.2, col = "#7a5320", cex = 0.95)
             }
         })
 
         output$cor_result <- renderUI({
             d <- analysis_vars()              # whatever is in the student's CSV
+            bad <- c(if (is_constant(d$X)) "X", if (is_constant(d$Y)) "Y")
+            validate(need(length(bad) == 0, msg_no_variance(bad)))
+
             ct <- cor.test(d$X, d$Y)          # Pearson; df = N - 2
             sig <- ct$p.value < .05
 
@@ -713,12 +854,19 @@ corrServer <- function(id) {
                 div(class = "decision", sprintf(
                     "The correlation is %sstatistically significant at α = .05.",
                     if (sig) "" else "not "
-                ))
+                )),
+                # Computable, but the measure may be barely discriminating.
+                lapply(c(if (d$x_scaled) caution_note(d$X, sx()$kmin, sx()$kmax),
+                         if (d$y_scaled) caution_note(d$Y, sy()$kmin, sy()$kmax)),
+                       function(m) div(class = "caution-note", m))
             )
         })
 
         output$reg_result <- renderUI({
             d <- analysis_vars()
+            bad <- c(if (is_constant(d$X)) "X", if (is_constant(d$Y)) "Y")
+            validate(need(length(bad) == 0, msg_no_variance(bad)))
+
             fit <- lm(d$Y ~ d$X)
             sm  <- summary(fit)
             b0  <- coef(fit)[1]; b1 <- coef(fit)[2]
@@ -727,6 +875,8 @@ corrServer <- function(id) {
             p_b1  <- sm$coefficients[2, 4]
             r2    <- sm$r.squared
             Fs    <- sm$fstatistic            # value, numdf, dendf
+            # NULL whenever the predictor carries no information at all.
+            validate(need(!is.null(Fs), msg_no_variance("X")))
             Fp    <- pf(Fs[1], Fs[2], Fs[3], lower.tail = FALSE)
 
             # Prediction equation, with the slope's sign read aloud.
@@ -791,9 +941,9 @@ ttestUI <- function(id) {
                     div(class = "box-note",
                         "The IV scale is built so that a median split of its
                          scale mean reproduces the two groups exactly."),
-                    scaleControlsUI(ns, "iv", "Grouping IV as a scale"),
-                    scaleControlsUI(ns, "dv", "Outcome / DV as a scale"),
-                    scaleGenerateUI(ns, c("iv", "dv"))
+                    scaleControlsUI(ns, "iv", "Grouping IV as a scale",
+                                    raw_label = "Group membership"),
+                    scaleControlsUI(ns, "dv", "Outcome / DV as a scale")
                 ),
 
                 # Sample size per group and the button sit outside the box.
@@ -876,12 +1026,18 @@ ttestServer <- function(id) {
             p
         }, ignoreNULL = FALSE)
 
-        scale_spec <- eventReactive(list(input$generate, input$gen_scales), {
-            list(iv = scale_spec_of(input, "iv"), dv = scale_spec_of(input, "dv"))
-        }, ignoreNULL = FALSE)
+        spec_iv <- eventReactive(list(input$generate, input$iv_gen),
+                                 scale_spec_of(input, "iv"), ignoreNULL = FALSE)
+        spec_dv <- eventReactive(list(input$generate, input$dv_gen),
+                                 scale_spec_of(input, "dv"), ignoreNULL = FALSE)
 
-        siv <- reactive(scale_settings(input, "iv", scale_spec()))
-        sdv <- reactive(scale_settings(input, "dv", scale_spec()))
+        siv <- reactive(scale_settings(input, "iv", spec_iv()))
+        sdv <- reactive(scale_settings(input, "dv", spec_dv()))
+
+        observe_scale_range(input, session, "dv")
+
+        observe_scale_range(input, session, "iv")
+        observe_scale_range(input, session, "dv")
 
         sim_data <- reactive({
             p <- params()
@@ -898,11 +1054,12 @@ ttestServer <- function(id) {
         # spread is the total (between + within) population SD.
         scaled_dv <- reactive({
             if (!isTRUE(input$dv_use)) return(NULL)
-            p <- params(); d <- sim_data(); spec <- scale_spec()$dv
+            p <- params(); d <- sim_data(); spec <- spec_dv()
             ref_m  <- (p$mean1 + p$mean2) / 2
             ref_sd <- sqrt(p$sd_pooled^2 + (p$diff / 2)^2)
             it <- make_scale_items(d$Score, ref_m, ref_sd, spec$items,
-                                   spec$kmin, spec$kmax, spec$rel)
+                                   spec$kmin, spec$kmax, spec$rel,
+                                   target = spec_target(spec))
             list(items = it, mean = rowMeans(it))
         })
 
@@ -912,10 +1069,11 @@ ttestServer <- function(id) {
         # the student typed still drive the DV.
         scaled_iv <- reactive({
             if (!isTRUE(input$iv_use)) return(NULL)
-            d <- sim_data(); spec <- scale_spec()$iv
+            d <- sim_data(); spec <- spec_iv()
             nt <- nrow(d)
             it <- make_scale_items(rnorm(nt), 0, 1, spec$items,
-                                   spec$kmin, spec$kmax, spec$rel)
+                                   spec$kmin, spec$kmax, spec$rel,
+                                   target = spec_target(spec))
             m   <- rowMeans(it)
             ord <- order(m)
             g1  <- which(d$Group == G1); g2 <- which(d$Group == G2)
@@ -1053,6 +1211,14 @@ ttestServer <- function(id) {
         output$ttest_result <- renderUI({
             d <- analysis_vars()              # whatever is in the student's CSV
             s1 <- d$Score[d$Group == G1]; s2 <- d$Score[d$Group == G2]
+
+            validate(need(!is_constant(d$Score),
+                          msg_no_variance("the outcome")))
+            # Separately reachable: the groups differ but nobody inside a group
+            # does, which makes t infinite rather than merely undefined.
+            validate(need(!is_constant(s1) && !is_constant(s2),
+                          msg_no_within_variance()))
+
             # Student's t (pooled variance), to match the pooled-SD Cohen's d.
             tt <- t.test(s2, s1, var.equal = TRUE)
             samp_d <- (mean(s2) - mean(s1)) / sqrt((var(s1) + var(s2)) / 2)
@@ -1074,7 +1240,10 @@ ttestServer <- function(id) {
                 div(class = "decision", sprintf(
                     "The difference is %sstatistically significant at α = .05.",
                     if (sig) "" else "not "
-                ))
+                )),
+                lapply(if (d$dv_scaled)
+                           caution_note(d$Score, sdv()$kmin, sdv()$kmax),
+                       function(m) div(class = "caution-note", m))
             )
         })
 
@@ -1082,6 +1251,12 @@ ttestServer <- function(id) {
         # F = t^2 and the p-value is identical to the t-test above.
         output$anova_result <- renderUI({
             a  <- analysis_vars()
+            validate(need(!is_constant(a$Score), msg_no_variance("the outcome")))
+            # Same condition as the t-test above: this box claims F = t^2, so it
+            # must not report F = Inf while the t-test declines to compute.
+            validate(need(!is_constant(a$Score[a$Group == G1]) &&
+                          !is_constant(a$Score[a$Group == G2]),
+                          msg_no_within_variance()))
             d  <- data.frame(Group = a$Group, Score = a$Score)
             s  <- summary(aov(Score ~ Group, data = d))[[1]]
             Fv <- s[["F value"]][1]; Fp <- s[["Pr(>F)"]][1]
@@ -1105,6 +1280,12 @@ ttestServer <- function(id) {
         # correlation with a two-value predictor.
         output$dummy_result <- renderUI({
             d <- analysis_vars()
+            validate(need(!is_constant(d$Score), msg_no_variance("the outcome")))
+            # This box's punchline is that r-squared equals the ANOVA's eta-squared,
+            # so it stands or falls with the ANOVA.
+            validate(need(!is_constant(d$Score[d$Group == G1]) &&
+                          !is_constant(d$Score[d$Group == G2]),
+                          msg_no_within_variance()))
             x  <- as.integer(d$Group) - 1L      # Group 1 = 0, Group 2 = 1
             ct <- cor.test(x, d$Score)
 
@@ -1172,6 +1353,11 @@ ttestServer <- function(id) {
                                    "Sample means"),
                    col = if (d$dv_scaled) "firebrick" else c("grey40", "firebrick"),
                    lwd = 2, lty = if (d$dv_scaled) 1 else c(2, 1))
+
+            if (is_constant(d$Score)) {
+                mtext("No variability \u2014 the groups cannot be compared",
+                      side = 3, line = 0.2, col = "#7a5320", cex = 0.95)
+            }
         })
     })
 }
@@ -1229,8 +1415,7 @@ pairedUI <- function(id) {
                     div(class = "box-note",
                         "Both measurements share one scale definition and one
                          mapping, so the difference between them survives."),
-                    scaleControlsUI(ns, "dv", "Outcome / DV as a scale"),
-                    scaleGenerateUI(ns, "dv")
+                    scaleControlsUI(ns, "dv", "Outcome / DV as a scale")
                 ),
 
                 # Sample size and the button sit outside the box.
@@ -1317,11 +1502,10 @@ pairedServer <- function(id) {
             p
         }, ignoreNULL = FALSE)
 
-        scale_spec <- eventReactive(list(input$generate, input$gen_scales), {
-            list(dv = scale_spec_of(input, "dv"))
-        }, ignoreNULL = FALSE)
+        spec_dv <- eventReactive(list(input$generate, input$dv_gen),
+                                 scale_spec_of(input, "dv"), ignoreNULL = FALSE)
 
-        sdv <- reactive(scale_settings(input, "dv", scale_spec()))
+        sdv <- reactive(scale_settings(input, "dv", spec_dv()))
 
         # Two correlated measurements per participant (same construction as the
         # correlation module: measurement 2 is measurement 1's z-score, blended
@@ -1344,12 +1528,13 @@ pairedServer <- function(id) {
         # correlate less -- and the two descriptives columns make it visible.
         scaled <- reactive({
             if (!isTRUE(input$dv_use)) return(NULL)
-            p <- params(); d <- sim_data(); spec <- scale_spec()$dv
+            p <- params(); d <- sim_data(); spec <- spec_dv()
             ref_m  <- (p$mean_c1 + p$mean_c2) / 2
             ref_sd <- sqrt((p$sd_c1^2 + p$sd_c2^2) / 2 + (p$diff / 2)^2)
             mk <- function(score) {
                 it <- make_scale_items(score, ref_m, ref_sd, spec$items,
-                                       spec$kmin, spec$kmax, spec$rel)
+                                       spec$kmin, spec$kmax, spec$rel,
+                                       target = spec_target(spec))
                 list(items = it, mean = rowMeans(it))
             }
             list(c1 = mk(d$Score1), c2 = mk(d$Score2),
@@ -1461,7 +1646,8 @@ pairedServer <- function(id) {
 
             stats_for <- function(a, b) {
                 dd <- b - a
-                c(mean(a), sd(a), mean(b), sd(b), cor(a, b), mean(dd),
+                c(mean(a), sd(a), mean(b), sd(b),
+                  suppressWarnings(cor(a, b)), mean(dd),
                   if (sd(dd) > 0) mean(dd) / sd(dd) else 0)
             }
 
@@ -1492,6 +1678,11 @@ pairedServer <- function(id) {
         output$ttest_result <- renderUI({
             d <- analysis_vars()              # whatever is in the student's CSV
             s1 <- d$Score1; s2 <- d$Score2; D <- s2 - s1
+
+            validate(need(!is_constant(D), msg_no_variance("the difference
+                          scores (every participant changed by exactly the same
+                          amount)")))
+
             tt <- t.test(s2, s1, paired = TRUE)
             samp_dz <- if (sd(D) > 0) mean(D) / sd(D) else 0
             sig <- tt$p.value < .05
@@ -1511,7 +1702,11 @@ pairedServer <- function(id) {
                 div(class = "decision", sprintf(
                     "The difference is %sstatistically significant at α = .05.",
                     if (sig) "" else "not "
-                ))
+                )),
+                lapply(if (d$dv_scaled)
+                           c(caution_note(s1, sdv()$kmin, sdv()$kmax),
+                             caution_note(s2, sdv()$kmin, sdv()$kmax))[1],
+                       function(m) div(class = "caution-note", m))
             )
         })
 
@@ -1521,6 +1716,8 @@ pairedServer <- function(id) {
         output$anova_result <- renderUI({
             d <- analysis_vars()
             s1 <- d$Score1; s2 <- d$Score2
+            validate(need(!is_constant(s2 - s1),
+                          msg_no_variance("the difference scores")))
             tt <- t.test(s2, s1, paired = TRUE)
             Fv <- tt$statistic^2
             df2 <- round(tt$parameter)               # n - 1
@@ -1543,6 +1740,9 @@ pairedServer <- function(id) {
         # powerful the test.
         output$cor_result <- renderUI({
             d <- analysis_vars()
+            bad <- c(if (is_constant(d$Score1)) "Condition 1",
+                     if (is_constant(d$Score2)) "Condition 2")
+            validate(need(length(bad) == 0, msg_no_variance(bad)))
             ct <- cor.test(d$Score1, d$Score2)
 
             ci <- if (length(ct$conf.int) == 2)
@@ -1622,6 +1822,11 @@ pairedServer <- function(id) {
                                 "grey40", "firebrick"),
                    lwd = if (d$dv_scaled) c(1, 2) else c(1, 2, 2),
                    lty = if (d$dv_scaled) c(1, 1) else c(1, 2, 1))
+
+            if (is_constant(D)) {
+                mtext("No variability in the difference scores",
+                      side = 3, line = 0.2, col = "#7a5320", cex = 0.95)
+            }
         })
     })
 }
